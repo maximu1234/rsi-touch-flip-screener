@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RSI Touch Flip Screener</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>RSI Touch Flip Screener</h1>
+      <p class="sub">Откройте ссылку в браузере и нажмите Старт — подбор идёт на этом компьютере, терминал не нужен. Таблица и CSV/JSON сохраняются у вас.</p>
+    </div>
+    <div class="top-actions">
+      <button type="button" class="btn ghost" id="btn-saved">Прошлый результат</button>
+      <a class="btn ghost" id="btn-csv" href="./api/export.csv">Сохранить CSV</a>
+      <a class="btn ghost" id="btn-json" href="./api/export.json">Сохранить JSON</a>
+      <button type="button" class="btn" id="btn-start">Старт</button>
+      <button type="button" class="btn danger" id="btn-stop" disabled>Стоп</button>
+    </div>
+  </header>
+
+  <form class="controls" id="form">
+    <label>Биржа
+      <select name="exchange">
+        <option value="bybit" selected>Bybit</option>
+        <option value="bingx" disabled>BingX (скоро)</option>
+      </select>
+    </label>
+    <label>Вселенная
+      <select name="universe">
+        <option value="all">Все USDT-перпы</option>
+        <option value="top100">Топ-100 по обороту 24ч</option>
+      </select>
+    </label>
+    <label>Тикеры
+      <input name="symbols" placeholder="оставьте пустым = все ~700 тикеров Bybit" />
+    </label>
+    <label>График
+      <input name="chartTf" value="5" />
+    </label>
+    <label>RSI ТФ
+      <input name="rsiTf" value="1" />
+    </label>
+    <label>Бюджет
+      <input name="budget" type="number" min="1" step="1" value="30" />
+    </label>
+    <label>Размер
+      <select name="sizeMode">
+        <option value="average" selected>средний × мульти</option>
+        <option value="equal">равные доли</option>
+      </select>
+    </label>
+    <label>Мульти
+      <input name="sizeMult" type="number" min="1" step="0.1" value="1.5" />
+    </label>
+    <label>Комиссия %
+      <input name="commissionPct" type="number" min="0" step="0.01" value="0.04" />
+    </label>
+    <label>Train %
+      <input name="trainPct" type="number" min="50" max="90" value="70" />
+    </label>
+    <label>Воркеры
+      <input name="workers" type="number" min="1" max="8" value="2" />
+    </label>
+    <label title="0 = полная сетка как «Подобрать» (~75 тысяч). Для проверки можно 100.">Лимит сетки
+      <input name="comboLimit" type="number" min="0" step="1" value="0" />
+    </label>
+    <label class="check">
+      <input name="cycleSlEnabled" type="checkbox" />
+      СЛ цикла
+    </label>
+    <label>СЛ %
+      <input name="cycleSlPct" type="number" min="1" max="90" value="30" />
+    </label>
+    <label class="check">
+      <input name="force" type="checkbox" />
+      Пересчитать готовые
+    </label>
+    <label>Фильтр
+      <input id="filter" placeholder="тикер или можно" />
+    </label>
+  </form>
+
+  <section class="status">
+    <div class="bar"><div id="bar-fill"></div></div>
+    <p id="status-line">Ожидание</p>
+    <p id="counts"></p>
+  </section>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="symbol">Тикер</th>
+          <th data-sort="ok">В бота</th>
+          <th data-sort="rsiLen">RSI</th>
+          <th data-sort="osLevel">OS</th>
+          <th data-sort="obLevel">OB</th>
+          <th data-sort="maxStack">Стек</th>
+          <th data-sort="chartDays">Дней</th>
+          <th data-sort="netProfit">Чистая</th>
+          <th data-sort="longProfit">Лонг</th>
+          <th data-sort="shortProfit">Шорт</th>
+          <th data-sort="grossProfit">Валовая</th>
+          <th data-sort="grossLoss">Убыток</th>
+          <th data-sort="closedTrades">Сделок</th>
+          <th data-sort="percentProfitable">Win%</th>
+          <th data-sort="profitFactor">PF</th>
+          <th data-sort="maxDrawdownPct">Просадка</th>
+          <th data-sort="avgTrade">Ср. сделка</th>
+          <th data-sort="avgBars">Ср. баров</th>
+          <th data-sort="trainNet">Train</th>
+          <th data-sort="testNet">Test</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <details class="log-box">
+    <summary>Лог</summary>
+    <pre id="log"></pre>
+  </details>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

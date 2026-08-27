@@ -1,0 +1,17 @@
+{
+  "exchange": "bybit",
+  "universe": "top100",
+  "chartTf": "5",
+  "rsiTf": "1",
+  "tradeSide": "BOTH",
+  "budget": 30,
+  "sizeMode": "average",
+  "sizeMult": 1.5,
+  "commissionPct": 0.04,
+  "trainPct": 70,
+  "cycleSlEnabled": false,
+  "cycleSlPct": 30,
+  "chartPages": 10,
+  "workers": 2,
+  "fetchConcurrency": 2
+}

@@ -1,0 +1,15 @@
+{
+  "name": "rsi-touch-flip-screener",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone RSI Touch Flip universe fit (Bybit linear). Not part of Multichart.",
+  "scripts": {
+    "start": "node src/server.js",
+    "scan": "node src/cli.js",
+    "sync:web": "cp lib/rsi-touch-flip-*.js public/lib/"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
