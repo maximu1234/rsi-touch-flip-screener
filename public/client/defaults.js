@@ -91,7 +91,11 @@ export function normalizeConfig(raw = {}) {
 }
 
 export function configFingerprint(config) {
-  const c = normalizeConfig(config);
+  const c = normalizeConfig({
+    ...config,
+    cycleSlEnabled: false,
+    cycleSlPct: 30
+  });
   return [
     c.exchange,
     c.chartTf,
@@ -122,5 +126,12 @@ export function prefsFromConfig(config) {
     cycleSlPct: c.cycleSlPct,
     showMarks: false,
     slippageTicks: 0
+  };
+}
+
+export function gridPrefsFromConfig(config) {
+  return {
+    ...prefsFromConfig(config),
+    cycleSlEnabled: false
   };
 }

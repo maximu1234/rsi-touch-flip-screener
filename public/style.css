@@ -140,6 +140,30 @@ tr.is-run td:first-child { color: var(--blue); }
 tr:hover td { background: #1c2330; }
 tr:hover td:first-child { background: #1c2330; }
 
+td.suitability {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 4.5rem;
+}
+th:last-child,
+td.suitability {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--bg);
+}
+th:last-child {
+  background: #1c2128;
+  z-index: 3;
+}
+tr:hover td.suitability,
+tr:hover th:last-child {
+  background: #1c2330;
+}
+td.suitability--high { color: var(--green); }
+td.suitability--mid { color: #d4a72c; }
+td.suitability--low { color: var(--red); }
+
 .log-box { padding: 8px 20px 24px; color: var(--muted); }
 .log-box pre {
   white-space: pre-wrap;

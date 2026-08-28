@@ -1,13 +1,17 @@
 import { listRsiTouchFlipOptimizeCombos } from "../lib/rsi-touch-flip-optimize.js";
 import {
+  paintBestWithCycleSl,
+  snapshotFittedBest
+} from "../lib/rsi-touch-flip-overlay.js";
+import {
   fetchKlinePages,
   listLinearUsdtPerps,
   listTurnoverBySymbol
 } from "./bybit.js";
 import {
   configFingerprint,
-  normalizeConfig,
-  prefsFromConfig
+  gridPrefsFromConfig,
+  normalizeConfig
 } from "./defaults.js";
 import { downloadText, exportBasename, rowsToCsv } from "./export.js";
 import {
@@ -16,7 +20,7 @@ import {
   saveCachedKlines,
   saveSavedResults
 } from "./idb.js";
-import { sourceEndMs, sourcePagesForChart } from "./rsi-prep.js";
+import { sourceEndMs, sourcePagesForChart, buildRsiForLen } from "./rsi-prep.js";
 
 function nowIso() {
   return new Date().toISOString();
@@ -99,6 +103,7 @@ const session = {
   startedAt: null,
   stoppedAt: null,
   log: [],
+  overlayGen: 0,
   progress: {
     phase: "idle",
     done: 0,
@@ -151,6 +156,135 @@ async function persist() {
     rows: session.rows,
     log: session.log.slice(-80)
   });
+}
+
+async function loadCachedHistory(config, symbol) {
+  const chartKey = cacheKey(config.exchange, symbol, config.chartTf);
+  const candles = await loadCachedKlines(chartKey, 0, false);
+  if (!candles?.length) {
+    return null;
+  }
+  let sourceCandles = [];
+  const rsiTf = config.rsiTf;
+  if (rsiTf && rsiTf !== config.chartTf) {
+    const srcKey = cacheKey(config.exchange, symbol, rsiTf);
+    sourceCandles = await loadCachedKlines(srcKey, 0, false);
+  }
+  return { candles, sourceCandles };
+}
+
+function paintWorkerBest(best, history) {
+  const snapped = snapshotFittedBest(best);
+  if (!session.config.cycleSlEnabled || !snapped?.combo || !history?.candles?.length) {
+    return snapped;
+  }
+  const rsiValues = buildRsiForLen(
+    history.candles,
+    history.sourceCandles,
+    session.config.chartTf,
+    session.config.rsiTf,
+    snapped.combo.rsiLen
+  );
+  return paintBestWithCycleSl(snapped, {
+    candles: history.candles,
+    rsiValues,
+    chartTf: session.config.chartTf,
+    trainPct: session.config.trainPct,
+    cycleSlEnabled: true,
+    cycleSlPct: session.config.cycleSlPct,
+    basePrefs: gridPrefsFromConfig(session.config)
+  });
+}
+
+export async function applyClientCycleSl(raw = {}, onState) {
+  const enabled = raw.cycleSlEnabled === true;
+  const pct = Math.min(
+    90,
+    Math.max(1, Number(raw.cycleSlPct) || session.config.cycleSlPct || 30)
+  );
+  session.config = normalizeConfig({
+    ...session.config,
+    cycleSlEnabled: enabled,
+    cycleSlPct: pct
+  });
+  session.overlayGen += 1;
+  const gen = session.overlayGen;
+  const symbols = Object.keys(session.rows).filter(
+    (symbol) => session.rows[symbol]?.best?.combo
+  );
+  note(
+    enabled
+      ? `СЛ цикла ${pct}%: пересчёт ${symbols.length} готовых тикеров (наборы те же).`
+      : "СЛ цикла выключен: цифры без стопа."
+  );
+  onState?.(publicState());
+  let done = 0;
+  let changed = 0;
+  for (const symbol of symbols) {
+    if (gen !== session.overlayGen) {
+      return publicState();
+    }
+    const row = session.rows[symbol];
+    const snapped = snapshotFittedBest(row.best);
+    const prevNet = Number(row.best?.overview?.netProfit);
+    let painted = snapped;
+    if (enabled === true) {
+      const history = await loadCachedHistory(session.config, symbol);
+      if (history?.candles?.length) {
+        const rsiValues = buildRsiForLen(
+          history.candles,
+          history.sourceCandles,
+          session.config.chartTf,
+          session.config.rsiTf,
+          snapped.combo.rsiLen
+        );
+        painted = paintBestWithCycleSl(snapped, {
+          candles: history.candles,
+          rsiValues,
+          chartTf: session.config.chartTf,
+          trainPct: session.config.trainPct,
+          cycleSlEnabled: true,
+          cycleSlPct: pct,
+          basePrefs: gridPrefsFromConfig(session.config)
+        });
+      }
+    } else if (snapped?.fitted) {
+      painted = {
+        ...snapped,
+        overview: snapped.fitted.overview,
+        train: snapped.fitted.train,
+        test: snapped.fitted.test,
+        verdict: snapped.fitted.verdict,
+        prefs: snapped.fitted.prefs
+      };
+    }
+    const nextNet = Number(painted?.overview?.netProfit);
+    if (
+      Number.isFinite(prevNet) &&
+      Number.isFinite(nextNet) &&
+      Math.abs(nextNet - prevNet) > 1e-9
+    ) {
+      changed += 1;
+    }
+    session.rows[symbol] = {
+      ...row,
+      best: painted,
+      updatedAt: nowIso()
+    };
+    done += 1;
+    if (done % 6 === 0) {
+      onState?.(publicState());
+    }
+  }
+  await persist();
+  note(
+    enabled
+      ? `СЛ цикла ${pct}%: изменились ${changed} из ${done} тикеров.`
+      : `СЛ цикла выключен: вернул ${changed} из ${done} тикеров.`
+  );
+  const snap = publicState();
+  onState?.(snap);
+  return snap;
 }
 
 export async function loadClientState() {
@@ -316,6 +450,25 @@ export function exportClientJson() {
   );
 }
 
+export async function importClientSnapshot(payload) {
+  if (session.running) {
+    throw new Error("Дождитесь окончания подбора");
+  }
+  const { normalizeImportPayload } = await import("../lib/import-results.js");
+  const snap = normalizeImportPayload(payload);
+  session.config = snap.config;
+  session.fingerprint = snap.fingerprint;
+  session.rows = snap.rows;
+  session.startedAt = snap.startedAt || nowIso();
+  session.stoppedAt = snap.stoppedAt || nowIso();
+  session.progress.total = Object.keys(session.rows).length;
+  session.progress.done = Object.values(session.rows).filter(isRowFinished).length;
+  session.progress.phase = "saved";
+  note(`Импорт: ${Object.keys(session.rows).length} тикеров`);
+  await persist();
+  return publicState();
+}
+
 export async function startClientScan(rawConfig, onState, onProgress) {
   if (session.running) {
     throw new Error("Подбор уже идёт");
@@ -400,7 +553,7 @@ export async function startClientScan(rawConfig, onState, onProgress) {
       return;
     }
 
-    const basePrefs = prefsFromConfig(config);
+    const basePrefs = gridPrefsFromConfig(config);
     const queue = pending.slice();
     const limitFetch = createLimiter(config.fetchConcurrency);
     const workerCount = Math.min(config.workers, pending.length);
@@ -496,10 +649,12 @@ export async function startClientScan(rawConfig, onState, onProgress) {
             return;
           }
           const net = result.best?.overview?.netProfit;
-          const verdict = result.best?.verdict?.ok ? "можно" : "нельзя";
+          const best = paintWorkerBest(result.best, history);
+          const verdict = best?.verdict?.ok ? "можно" : "нельзя";
+          const shownNet = best?.overview?.netProfit ?? net;
           note(
-            result.best
-              ? `${symbol}: ${verdict}, чистая ${Number(net).toFixed(2)}`
+            best
+              ? `${symbol}: ${verdict}, чистая ${Number(shownNet).toFixed(2)}`
               : `${symbol}: набор не найден`
           );
           await saveRow({
@@ -507,11 +662,11 @@ export async function startClientScan(rawConfig, onState, onProgress) {
             status: "done",
             candles: history.candles.length,
             sourceCandles: history.sourceCandles?.length || 0,
-            best: result.best,
+            best,
             split: result.split,
             tried: result.tried,
             total: result.total,
-            note: result.best ? "" : "нет набора с ≥8 сделками на Train",
+            note: best ? "" : "нет набора с ≥8 сделками на Train",
             updatedAt: nowIso()
           });
         } catch (err) {

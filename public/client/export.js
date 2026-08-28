@@ -1,3 +1,5 @@
+import { rsiTouchFlipSuitabilityScore } from "../lib/suitability-score.js";
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -38,6 +40,7 @@ export function rowsToCsv(rows) {
     "trainNet",
     "testNet",
     "testTrades",
+    "suitability",
     "reasons",
     "error"
   ];
@@ -76,6 +79,7 @@ export function rowsToCsv(rows) {
       row.best?.train?.netProfit ?? "",
       row.best?.test?.netProfit ?? "",
       row.best?.test?.closedTrades ?? "",
+      rsiTouchFlipSuitabilityScore(row) ?? "",
       (v.reasons || []).join("; "),
       row.error || row.note || ""
     ];

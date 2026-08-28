@@ -25,28 +25,31 @@ export function sourceEndMs(chartCandles, chartTf) {
   return (last + chartSec) * 1000;
 }
 
-export function buildRsiByLen(chartCandles, sourceCandles, chartTf, rsiTf) {
-  const map = new Map();
+export function buildRsiForLen(chartCandles, sourceCandles, chartTf, rsiTf, rsiLen) {
   const same =
     !rsiTf ||
     rsiTf === chartTf ||
     !Array.isArray(sourceCandles) ||
     !sourceCandles.length;
+  if (same) {
+    return computeWilderRsiValues(chartCandles, rsiLen);
+  }
+  const sourceRsi = computeWilderRsiValues(sourceCandles, rsiLen);
+  return projectClosedSourceRsiOntoChart(
+    chartCandles,
+    chartTf,
+    sourceCandles,
+    rsiTf,
+    sourceRsi
+  );
+}
+
+export function buildRsiByLen(chartCandles, sourceCandles, chartTf, rsiTf) {
+  const map = new Map();
   for (const rsiLen of RSI_TOUCH_FLIP_LEN_GRID) {
-    if (same) {
-      map.set(rsiLen, computeWilderRsiValues(chartCandles, rsiLen));
-      continue;
-    }
-    const sourceRsi = computeWilderRsiValues(sourceCandles, rsiLen);
     map.set(
       rsiLen,
-      projectClosedSourceRsiOntoChart(
-        chartCandles,
-        chartTf,
-        sourceCandles,
-        rsiTf,
-        sourceRsi
-      )
+      buildRsiForLen(chartCandles, sourceCandles, chartTf, rsiTf, rsiLen)
     );
   }
   return map;

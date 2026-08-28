@@ -1,10 +1,13 @@
 import {
   exportClientCsv,
   exportClientJson,
+  importClientSnapshot,
   loadClientState,
   startClientScan,
-  stopClientScan
+  stopClientScan,
+  applyClientCycleSl
 } from "./client/scan-client.js";
+import { parseImportFile } from "./lib/import-results.js";
 
 const form = document.getElementById("form");
 const tbody = document.getElementById("tbody");
@@ -16,6 +19,8 @@ const filterEl = document.getElementById("filter");
 const btnStart = document.getElementById("btn-start");
 const btnStop = document.getElementById("btn-stop");
 const btnSaved = document.getElementById("btn-saved");
+const btnImport = document.getElementById("btn-import");
+const importFile = document.getElementById("import-file");
 
 const LOCAL_KEY = "rsi-touch-flip-screener-last-v1";
 
@@ -73,6 +78,154 @@ function emptyCells(count) {
   return "<td>—</td>".repeat(count);
 }
 
+function clampSuitabilityScore(value) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function profitFactorNum(raw) {
+  if (raw === Infinity || raw === "Infinity") {
+    return 99;
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function rsiTouchFlipSuitabilityScore(row) {
+  const best = row?.best;
+  if (!best?.overview || !best?.combo) {
+    return null;
+  }
+
+  const o = best.overview;
+  const trainNet = Number(best.train?.netProfit);
+  const testNet = Number(best.test?.netProfit);
+  const testTrades = Number(best.test?.closedTrades);
+  const verdictOk = best.verdict?.ok === true;
+  const trades = Number(o.closedTrades);
+  const pf = profitFactorNum(o.profitFactor);
+  const ddPct = Math.abs(Number(o.maxDrawdownPct));
+  const days = Number(o.chartDays);
+  const grossProfit = Number(o.grossProfit);
+  const grossLoss = Math.abs(Number(o.grossLoss));
+
+  let score = verdictOk ? 50 : 22;
+
+  if (verdictOk) {
+    score += 6;
+  }
+
+  if (Number.isFinite(testNet) && testNet > 0) {
+    score += 5;
+    if (Number.isFinite(trainNet) && trainNet > 0) {
+      const ratio = testNet / trainNet;
+      if (ratio >= 0.3) {
+        score += 8;
+      } else if (ratio >= 0.15) {
+        score += 5;
+      } else if (ratio >= 0.05) {
+        score += 2;
+      } else {
+        score -= 6;
+      }
+    }
+  } else if (Number.isFinite(testNet)) {
+    score -= 18;
+  }
+
+  if (Number.isFinite(trades)) {
+    if (trades >= 200) {
+      score += 8;
+    } else if (trades >= 80) {
+      score += 6;
+    } else if (trades >= 40) {
+      score += 3;
+    } else if (trades >= 25) {
+      score += 1;
+    } else {
+      score -= 12;
+    }
+  }
+
+  if (Number.isFinite(testTrades) && testTrades < 8) {
+    score -= 8;
+  }
+
+  if (pf != null) {
+    if (pf >= 3) {
+      score += 6;
+    } else if (pf >= 2) {
+      score += 4;
+    } else if (pf >= 1.5) {
+      score += 2;
+    } else if (pf < 1) {
+      score -= 8;
+    }
+  }
+
+  if (Number.isFinite(ddPct)) {
+    if (ddPct <= 10) {
+      score += 5;
+    } else if (ddPct <= 18) {
+      score += 2;
+    } else if (ddPct > 30) {
+      score -= 5;
+    }
+  }
+
+  if (Number.isFinite(days) && days < 28) {
+    score -= 6;
+  }
+
+  if (
+    Number.isFinite(grossProfit) &&
+    grossProfit > 80 &&
+    Number.isFinite(trades) &&
+    trades < 35
+  ) {
+    score -= 10;
+  }
+
+  if (
+    Number.isFinite(grossProfit) &&
+    grossProfit > 0 &&
+    Number.isFinite(grossLoss) &&
+    grossLoss < grossProfit * 0.03 &&
+    Number.isFinite(trades) &&
+    trades < 50
+  ) {
+    score -= 8;
+  }
+
+  if (!verdictOk) {
+    score = Math.min(score, 38);
+  }
+
+  return clampSuitabilityScore(score);
+}
+
+function suitabilityBand(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n)) {
+    return "";
+  }
+  if (n >= 70) {
+    return "high";
+  }
+  if (n >= 45) {
+    return "mid";
+  }
+  return "low";
+}
+
+function suitabilityCell(row) {
+  const score = rsiTouchFlipSuitabilityScore(row);
+  if (score == null) {
+    return "<td>—</td>";
+  }
+  const band = suitabilityBand(score);
+  return `<td class="suitability suitability--${band}">${score}%</td>`;
+}
+
 function sortValue(row, key) {
   const o = row.best?.overview || {};
   const c = row.best?.combo || {};
@@ -99,6 +252,8 @@ function sortValue(row, key) {
       return num(row.best?.train?.netProfit) ?? -Infinity;
     case "testNet":
       return num(row.best?.test?.netProfit) ?? -Infinity;
+    case "suitability":
+      return rsiTouchFlipSuitabilityScore(row) ?? -Infinity;
     default:
       return num(o[key]) ?? -Infinity;
   }
@@ -138,7 +293,7 @@ function renderTable() {
   tbody.innerHTML = rows
     .map((row) => {
       if (row.error) {
-        return `<tr class="is-error"><td>${row.symbol}</td><td class="no">ошибка</td><td colspan="18">${row.error}</td></tr>`;
+        return `<tr class="is-error"><td>${row.symbol}</td><td class="no">ошибка</td><td colspan="19">${row.error}</td></tr>`;
       }
       const o = row.best?.overview;
       const c = row.best?.combo;
@@ -155,7 +310,7 @@ function renderTable() {
             : row.status === "queued"
               ? "is-wait"
               : "";
-        return `<tr class="${kind}"><td>${row.symbol}</td><td class="muted">${label}</td>${emptyCells(18)}</tr>`;
+        return `<tr class="${kind}"><td>${row.symbol}</td><td class="muted">${label}</td>${emptyCells(19)}</tr>`;
       }
       const ok = row.best?.verdict?.ok;
       return `<tr>
@@ -182,6 +337,7 @@ function renderTable() {
         <td>${fmt(o?.avgBars, 1)}</td>
         ${moneyCell(row.best?.train?.netProfit, row.best?.train?.netProfitPct)}
         ${moneyCell(row.best?.test?.netProfit, row.best?.test?.netProfitPct)}
+        ${suitabilityCell(row)}
       </tr>`;
     })
     .join("");
@@ -275,7 +431,10 @@ function applyState(next, opts = {}) {
   state = next || state;
   renderChrome();
   const stamp = (state.rows || [])
-    .map((r) => `${r.updatedAt}|${r.symbol}|${r.status}`)
+    .map(
+      (r) =>
+        `${r.updatedAt}|${r.symbol}|${r.status}|${r.best?.overview?.netProfit}|${r.best?.prefs?.cycleSlEnabled}`
+    )
     .join(";");
   if (opts.force || stamp !== lastRowStamp) {
     lastRowStamp = stamp;
@@ -322,11 +481,15 @@ function readForm() {
   };
 }
 
-function fillForm(config) {
+function fillForm(config, opts = {}) {
   if (!config) {
     return;
   }
   const skip = new Set(["symbols", "comboLimit", "force"]);
+  if (opts.keepCycleSl) {
+    skip.add("cycleSlEnabled");
+    skip.add("cycleSlPct");
+  }
   for (const [key, value] of Object.entries(config)) {
     if (skip.has(key)) {
       continue;
@@ -387,6 +550,47 @@ document.getElementById("btn-json").addEventListener("click", (ev) => {
   }
   ev.preventDefault();
   exportClientJson();
+});
+
+async function importResultsFile(file) {
+  const text = await file.text();
+  const payload = parseImportFile(text, file.name);
+  if (useBackend) {
+    const res = await fetch("./api/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(json.error || "Не удалось загрузить файл");
+    }
+    fillForm(json.config);
+    applyState(json, { force: true });
+    return Object.keys(payload.rows).length;
+  }
+  const snap = await importClientSnapshot(payload);
+  fillForm(snap.config);
+  applyState(snap, { force: true });
+  return Object.keys(payload.rows).length;
+}
+
+btnImport.addEventListener("click", () => {
+  importFile.click();
+});
+
+importFile.addEventListener("change", async () => {
+  const file = importFile.files?.[0];
+  importFile.value = "";
+  if (!file) {
+    return;
+  }
+  try {
+    const count = await importResultsFile(file);
+    statusLine.textContent = `Загружено ${count} тикеров из ${file.name}`;
+  } catch (err) {
+    statusLine.textContent = err?.message || "Не удалось загрузить файл";
+  }
 });
 
 async function loadSavedFromServer() {
@@ -455,6 +659,56 @@ btnSaved.addEventListener("click", () => {
 
 filterEl.addEventListener("input", renderTable);
 
+let cycleSlReady = false;
+let cycleSlTouched = false;
+let cycleSlTimer = 0;
+
+function queueCycleSl() {
+  if (!cycleSlReady) {
+    return;
+  }
+  window.clearTimeout(cycleSlTimer);
+  cycleSlTimer = window.setTimeout(() => {
+    void sendCycleSl();
+  }, 280);
+}
+
+async function sendCycleSl() {
+  const body = {
+    cycleSlEnabled: form.elements.cycleSlEnabled.checked,
+    cycleSlPct: Number(form.elements.cycleSlPct.value)
+  };
+  if (!useBackend) {
+    try {
+      await applyClientCycleSl(body, (snap) => applyState(snap, { force: true }));
+    } catch (err) {
+      statusLine.textContent = err?.message || "Не удалось пересчитать СЛ";
+    }
+    return;
+  }
+  try {
+    const res = await fetch("./api/cycle-sl", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      statusLine.textContent = "Не удалось пересчитать СЛ цикла";
+    }
+  } catch (err) {
+    statusLine.textContent = err?.message || "Не удалось пересчитать СЛ цикла";
+  }
+}
+
+form.elements.cycleSlEnabled.addEventListener("change", () => {
+  cycleSlTouched = true;
+  queueCycleSl();
+});
+form.elements.cycleSlPct.addEventListener("change", () => {
+  cycleSlTouched = true;
+  queueCycleSl();
+});
+
 for (const th of document.querySelectorAll("th[data-sort]")) {
   th.addEventListener("click", () => {
     const key = th.getAttribute("data-sort");
@@ -503,7 +757,7 @@ if (useBackend) {
   fetch("./api/state")
     .then((r) => r.json())
     .then((json) => {
-      fillForm(json.config);
+      fillForm(json.config, { keepCycleSl: cycleSlTouched });
       if (json.rows?.length) {
         applyState(json, { force: true });
         return;
@@ -527,3 +781,6 @@ if (useBackend) {
       "Откройте страницу и нажмите Старт — подбор идёт в этом браузере";
   }
 }
+
+cycleSlReady = true;
+renderTable();

@@ -68,7 +68,13 @@ export function normalizeConfig(raw = {}) {
 }
 
 export function configFingerprint(config) {
-  const c = normalizeConfig(config);
+  const c = normalizeConfig({
+    ...config,
+    // СЛ цикла — оверлей на уже найденный набор, не новая сетка.
+    // Слот 0|30 сохраняет совместимость с текущим overnight-прогоном.
+    cycleSlEnabled: false,
+    cycleSlPct: 30
+  });
   return [
     c.exchange,
     c.chartTf,
@@ -99,5 +105,12 @@ export function prefsFromConfig(config) {
     cycleSlPct: c.cycleSlPct,
     showMarks: false,
     slippageTicks: 0
+  };
+}
+
+export function gridPrefsFromConfig(config) {
+  return {
+    ...prefsFromConfig(config),
+    cycleSlEnabled: false
   };
 }

@@ -138,6 +138,20 @@ const server = http.createServer(async (req, res) => {
       );
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/import") {
+      if (controller.running) {
+        sendJson(res, 409, { ok: false, error: "Подбор уже идёт" });
+        return;
+      }
+      const body = await readBody(req);
+      try {
+        const state = await controller.importSnapshot(body);
+        sendJson(res, 200, { ok: true, ...state });
+      } catch (err) {
+        sendJson(res, 400, { ok: false, error: err?.message || String(err) });
+      }
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/reload") {
       if (controller.running) {
         sendJson(res, 200, controller.getState());
@@ -155,6 +169,14 @@ const server = http.createServer(async (req, res) => {
       }
       sendJson(res, 200, { ok: true });
       controller.start(body).catch((err) => {
+        console.error(err);
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/cycle-sl") {
+      const body = await readBody(req);
+      sendJson(res, 200, { ok: true });
+      controller.applyCycleSl(body).catch((err) => {
         console.error(err);
       });
       return;
@@ -177,4 +199,10 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`RSI Touch Flip Screener: http://127.0.0.1:${PORT}`);
+  if (controller.canResumeInterruptedScan()) {
+    console.log("Resuming interrupted scan…");
+    controller.start({ ...controller.config, force: false }).catch((err) => {
+      console.error(err);
+    });
+  }
 });

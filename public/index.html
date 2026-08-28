@@ -4,16 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RSI Touch Flip Screener</title>
-  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./style.css?v=3" />
 </head>
 <body>
   <header class="top">
     <div>
       <h1>RSI Touch Flip Screener</h1>
-      <p class="sub">Откройте ссылку в браузере и нажмите Старт — подбор идёт на этом компьютере, терминал не нужен. Таблица и CSV/JSON сохраняются у вас.</p>
+      <p class="sub">Откройте ссылку в браузере и нажмите Старт — подбор идёт на этом компьютере, терминал не нужен. Результаты можно сохранить в CSV/JSON или загрузить файл от друга.</p>
     </div>
     <div class="top-actions">
       <button type="button" class="btn ghost" id="btn-saved">Прошлый результат</button>
+      <button type="button" class="btn ghost" id="btn-import">Загрузить…</button>
+      <input type="file" id="import-file" accept=".csv,.json,application/json,text/csv" hidden />
       <a class="btn ghost" id="btn-csv" href="./api/export.csv">Сохранить CSV</a>
       <a class="btn ghost" id="btn-json" href="./api/export.json">Сохранить JSON</a>
       <button type="button" class="btn" id="btn-start">Старт</button>
@@ -67,7 +69,7 @@
     <label title="0 = полная сетка как «Подобрать» (~75 тысяч). Для проверки можно 100.">Лимит сетки
       <input name="comboLimit" type="number" min="0" step="1" value="0" />
     </label>
-    <label class="check">
+    <label class="check" title="Пересчитывает таблицу для уже найденных наборов. Сетку заново не перебирает.">
       <input name="cycleSlEnabled" type="checkbox" />
       СЛ цикла
     </label>
@@ -113,6 +115,7 @@
           <th data-sort="avgBars">Ср. баров</th>
           <th data-sort="trainNet">Train</th>
           <th data-sort="testNet">Test</th>
+          <th data-sort="suitability" title="Индекс пригодности 0–100: насколько строка подбора выглядит надёжной для live (только метрики этой строки)">ИП</th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
@@ -124,6 +127,6 @@
     <pre id="log"></pre>
   </details>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=4"></script>
 </body>
 </html>

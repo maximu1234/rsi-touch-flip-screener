@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "scan": "node src/cli.js",
-    "sync:web": "cp lib/rsi-touch-flip-*.js public/lib/"
+    "sync:web": "cp lib/rsi-touch-flip-*.js lib/suitability-score.js public/lib/"
   },
   "engines": {
     "node": ">=20"

@@ -4,13 +4,22 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { listRsiTouchFlipOptimizeCombos } from "../lib/rsi-touch-flip-optimize.js";
 import {
+  paintBestWithCycleSl,
+  snapshotFittedBest
+} from "../lib/rsi-touch-flip-overlay.js";
+import {
   configFingerprint,
   DEFAULT_CONFIG,
-  normalizeConfig,
-  prefsFromConfig
+  gridPrefsFromConfig,
+  normalizeConfig
 } from "./defaults.js";
 import { getExchange } from "./exchanges/index.js";
-import { sourceEndMs, sourcePagesForChart } from "./rsi-prep.js";
+import {
+  buildRsiForLen,
+  sourceEndMs,
+  sourcePagesForChart
+} from "./rsi-prep.js";
+import { rsiTouchFlipSuitabilityScore } from "../lib/suitability-score.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./worker.js", import.meta.url));
 
@@ -144,6 +153,7 @@ export class ScanController {
     };
     this.cancel = { cancelled: false };
     this.workers = [];
+    this.overlayGen = 0;
   }
 
   on(fn) {
@@ -164,6 +174,15 @@ export class ScanController {
 
   getState() {
     return publicState(this);
+  }
+
+  canResumeInterruptedScan() {
+    if (this.running || this.stoppedAt || !this.startedAt) {
+      return false;
+    }
+    return Object.values(this.rows).some(
+      (row) => row.status === "queued" || row.status === "running"
+    );
   }
 
   note(message) {
@@ -199,6 +218,26 @@ export class ScanController {
       updatedAt: nowIso(),
       rows: this.rows
     });
+  }
+
+  async importSnapshot(payload) {
+    if (this.running) {
+      throw new Error("Дождитесь окончания подбора");
+    }
+    const { normalizeImportPayload } = await import("../lib/import-results.js");
+    const snap = normalizeImportPayload(payload);
+    this.config = snap.config;
+    this.fingerprint = snap.fingerprint;
+    this.rows = snap.rows;
+    this.startedAt = snap.startedAt || nowIso();
+    this.stoppedAt = snap.stoppedAt || nowIso();
+    this.progress.total = Object.keys(this.rows).length;
+    this.progress.done = Object.values(this.rows).filter((row) => isRowFinished(row)).length;
+    this.progress.phase = "saved";
+    this.note(`Импорт: ${Object.keys(this.rows).length} тикеров`);
+    await this.persist();
+    this.emit();
+    return this.getState();
   }
 
   cacheFile(exchange, symbol, tf) {
@@ -249,6 +288,143 @@ export class ScanController {
       .sort((a, b) => b.turnover - a.turnover)
       .slice(0, 100)
       .map((row) => row.symbol);
+  }
+
+  async loadCachedHistory(symbol) {
+    const exchange = this.config.exchange;
+    const chartTf = this.config.chartTf;
+    const rsiTf = this.config.rsiTf;
+    const candles = await this.loadCache(exchange, symbol, chartTf, 0, false);
+    if (!candles?.length) {
+      return null;
+    }
+    let sourceCandles = [];
+    if (rsiTf && rsiTf !== chartTf) {
+      sourceCandles = await this.loadCache(exchange, symbol, rsiTf, 0, false);
+    }
+    return { candles, sourceCandles };
+  }
+
+  async paintRowBest(row, enabled, pct) {
+    if (!row?.best?.combo) {
+      return row?.best || null;
+    }
+    const snapped = snapshotFittedBest(row.best);
+    if (enabled !== true) {
+      return snapped &&
+        snapped.fitted
+        ? {
+            ...snapped,
+            overview: snapped.fitted.overview,
+            train: snapped.fitted.train,
+            test: snapped.fitted.test,
+            verdict: snapped.fitted.verdict,
+            prefs: snapped.fitted.prefs
+          }
+        : snapped;
+    }
+    const history = await this.loadCachedHistory(row.symbol);
+    if (!history?.candles?.length) {
+      return snapped;
+    }
+    const rsiValues = buildRsiForLen(
+      history.candles,
+      history.sourceCandles,
+      this.config.chartTf,
+      this.config.rsiTf,
+      snapped.combo.rsiLen
+    );
+    return paintBestWithCycleSl(snapped, {
+      candles: history.candles,
+      rsiValues,
+      chartTf: this.config.chartTf,
+      trainPct: this.config.trainPct,
+      cycleSlEnabled: true,
+      cycleSlPct: pct,
+      basePrefs: gridPrefsFromConfig(this.config)
+    });
+  }
+
+  paintWorkerBest(best, history) {
+    const snapped = snapshotFittedBest(best);
+    if (!this.config.cycleSlEnabled || !snapped?.combo || !history?.candles?.length) {
+      return snapped;
+    }
+    const rsiValues = buildRsiForLen(
+      history.candles,
+      history.sourceCandles,
+      this.config.chartTf,
+      this.config.rsiTf,
+      snapped.combo.rsiLen
+    );
+    return paintBestWithCycleSl(snapped, {
+      candles: history.candles,
+      rsiValues,
+      chartTf: this.config.chartTf,
+      trainPct: this.config.trainPct,
+      cycleSlEnabled: true,
+      cycleSlPct: this.config.cycleSlPct,
+      basePrefs: gridPrefsFromConfig(this.config)
+    });
+  }
+
+  async applyCycleSl(raw = {}) {
+    const enabled = raw.cycleSlEnabled === true;
+    const pct = Math.min(
+      90,
+      Math.max(1, Number(raw.cycleSlPct) || this.config.cycleSlPct || 30)
+    );
+    this.config = normalizeConfig({
+      ...this.config,
+      cycleSlEnabled: enabled,
+      cycleSlPct: pct
+    });
+    this.overlayGen += 1;
+    const gen = this.overlayGen;
+    const symbols = Object.keys(this.rows).filter(
+      (symbol) => this.rows[symbol]?.best?.combo
+    );
+    this.note(
+      enabled
+        ? `СЛ цикла ${pct}%: пересчёт ${symbols.length} готовых тикеров (наборы те же).`
+        : "СЛ цикла выключен: цифры без стопа."
+    );
+    this.emit("state");
+    let done = 0;
+    let changed = 0;
+    for (const symbol of symbols) {
+      if (gen !== this.overlayGen) {
+        return;
+      }
+      const row = this.rows[symbol];
+      const prevNet = Number(row.best?.overview?.netProfit);
+      const painted = await this.paintRowBest(row, enabled, pct);
+      const nextNet = Number(painted?.overview?.netProfit);
+      if (
+        Number.isFinite(prevNet) &&
+        Number.isFinite(nextNet) &&
+        Math.abs(nextNet - prevNet) > 1e-9
+      ) {
+        changed += 1;
+      }
+      this.rows[symbol] = {
+        ...row,
+        best: painted,
+        updatedAt: nowIso()
+      };
+      done += 1;
+      if (done % 6 === 0) {
+        this.emit("state");
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+    await this.persist();
+    this.note(
+      enabled
+        ? `СЛ цикла ${pct}%: изменились ${changed} из ${done} тикеров.`
+        : `СЛ цикла выключен: вернул ${changed} из ${done} тикеров.`
+    );
+    this.emit("state");
   }
 
   async loadHistory(config, symbol) {
@@ -443,7 +619,7 @@ export class ScanController {
     const combos = listRsiTouchFlipOptimizeCombos();
     const usedCombos =
       config.comboLimit > 0 ? combos.slice(0, config.comboLimit) : combos;
-    const basePrefs = prefsFromConfig(config);
+    const basePrefs = gridPrefsFromConfig(config);
     const queue = pending.slice();
     const limitFetch = createLimiter(config.fetchConcurrency);
     const workerCount = Math.min(config.workers, pending.length);
@@ -530,10 +706,12 @@ export class ScanController {
             return;
           }
           const net = result.best?.overview?.netProfit;
-          const verdict = result.best?.verdict?.ok ? "можно" : "нельзя";
+          const best = this.paintWorkerBest(result.best, history);
+          const verdict = best?.verdict?.ok ? "можно" : "нельзя";
+          const shownNet = best?.overview?.netProfit ?? net;
           this.note(
-            result.best
-              ? `${symbol}: ${verdict}, чистая ${Number(net).toFixed(2)}`
+            best
+              ? `${symbol}: ${verdict}, чистая ${Number(shownNet).toFixed(2)}`
               : `${symbol}: набор не найден`
           );
           await saveRow({
@@ -541,11 +719,11 @@ export class ScanController {
             status: "done",
             candles: history.candles.length,
             sourceCandles: history.sourceCandles?.length || 0,
-            best: result.best,
+            best,
             split: result.split,
             tried: result.tried,
             total: result.total,
-            note: result.best ? "" : "нет набора с ≥8 сделками на Train",
+            note: best ? "" : "нет набора с ≥8 сделками на Train",
             updatedAt: nowIso()
           });
         } catch (err) {
@@ -594,6 +772,7 @@ export class ScanController {
       "trainNet",
       "testNet",
       "testTrades",
+      "suitability",
       "reasons",
       "error"
     ];
@@ -633,6 +812,7 @@ export class ScanController {
         row.best?.train?.netProfit ?? "",
         row.best?.test?.netProfit ?? "",
         row.best?.test?.closedTrades ?? "",
+        rsiTouchFlipSuitabilityScore(row) ?? "",
         (v.reasons || []).join("; "),
         row.error || row.note || ""
       ];
