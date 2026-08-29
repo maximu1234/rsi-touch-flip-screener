@@ -1,4 +1,4 @@
-import { configFingerprint, normalizeConfig } from "../src/defaults.js";
+import { configFingerprint, normalizeConfig } from "./screener-defaults.js";
 
 function nowIso() {
   return new Date().toISOString();
