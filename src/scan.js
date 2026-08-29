@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { listRsiTouchFlipOptimizeCombos } from "../lib/rsi-touch-flip-optimize.js";
 import {
-  paintBestWithCycleSl,
+  repaintFittedBest,
   snapshotFittedBest
 } from "../lib/rsi-touch-flip-overlay.js";
 import {
@@ -305,14 +305,15 @@ export class ScanController {
     return { candles, sourceCandles };
   }
 
-  async paintRowBest(row, enabled, pct) {
+  async paintRowBest(row, config = this.config) {
     if (!row?.best?.combo) {
       return row?.best || null;
     }
     const snapped = snapshotFittedBest(row.best);
-    if (enabled !== true) {
-      return snapped &&
-        snapped.fitted
+    const cycleSl = config.cycleSlEnabled === true;
+    const compound = config.compoundEnabled === true;
+    if (!cycleSl && !compound) {
+      return snapped?.fitted
         ? {
             ...snapped,
             overview: snapped.fitted.overview,
@@ -330,64 +331,77 @@ export class ScanController {
     const rsiValues = buildRsiForLen(
       history.candles,
       history.sourceCandles,
-      this.config.chartTf,
-      this.config.rsiTf,
+      config.chartTf,
+      config.rsiTf,
       snapped.combo.rsiLen
     );
-    return paintBestWithCycleSl(snapped, {
+    return repaintFittedBest(snapped, {
       candles: history.candles,
       rsiValues,
-      chartTf: this.config.chartTf,
-      trainPct: this.config.trainPct,
-      cycleSlEnabled: true,
-      cycleSlPct: pct,
-      basePrefs: gridPrefsFromConfig(this.config)
+      chartTf: config.chartTf,
+      trainPct: config.trainPct,
+      cycleSlEnabled: cycleSl,
+      cycleSlPct: config.cycleSlPct,
+      compoundEnabled: compound,
+      basePrefs: gridPrefsFromConfig(config)
     });
   }
 
   paintWorkerBest(best, history) {
     const snapped = snapshotFittedBest(best);
-    if (!this.config.cycleSlEnabled || !snapped?.combo || !history?.candles?.length) {
+    const cfg = this.config;
+    const needsRepaint = cfg.cycleSlEnabled || cfg.compoundEnabled;
+    if (!needsRepaint || !snapped?.combo || !history?.candles?.length) {
       return snapped;
     }
     const rsiValues = buildRsiForLen(
       history.candles,
       history.sourceCandles,
-      this.config.chartTf,
-      this.config.rsiTf,
+      cfg.chartTf,
+      cfg.rsiTf,
       snapped.combo.rsiLen
     );
-    return paintBestWithCycleSl(snapped, {
+    return repaintFittedBest(snapped, {
       candles: history.candles,
       rsiValues,
-      chartTf: this.config.chartTf,
-      trainPct: this.config.trainPct,
-      cycleSlEnabled: true,
-      cycleSlPct: this.config.cycleSlPct,
-      basePrefs: gridPrefsFromConfig(this.config)
+      chartTf: cfg.chartTf,
+      trainPct: cfg.trainPct,
+      cycleSlEnabled: cfg.cycleSlEnabled === true,
+      cycleSlPct: cfg.cycleSlPct,
+      compoundEnabled: cfg.compoundEnabled === true,
+      basePrefs: gridPrefsFromConfig(cfg)
     });
   }
 
   async applyCycleSl(raw = {}) {
-    const enabled = raw.cycleSlEnabled === true;
-    const pct = Math.min(
+    const cycleSlEnabled = raw.cycleSlEnabled === true;
+    const cycleSlPct = Math.min(
       90,
       Math.max(1, Number(raw.cycleSlPct) || this.config.cycleSlPct || 30)
     );
+    const compoundEnabled = raw.compoundEnabled === true;
     this.config = normalizeConfig({
       ...this.config,
-      cycleSlEnabled: enabled,
-      cycleSlPct: pct
+      cycleSlEnabled,
+      cycleSlPct,
+      compoundEnabled
     });
     this.overlayGen += 1;
     const gen = this.overlayGen;
     const symbols = Object.keys(this.rows).filter(
       (symbol) => this.rows[symbol]?.best?.combo
     );
+    const overlayParts = [];
+    if (cycleSlEnabled) {
+      overlayParts.push(`СЛ ${cycleSlPct}%`);
+    }
+    if (compoundEnabled) {
+      overlayParts.push("Compound");
+    }
     this.note(
-      enabled
-        ? `СЛ цикла ${pct}%: пересчёт ${symbols.length} готовых тикеров (наборы те же).`
-        : "СЛ цикла выключен: цифры без стопа."
+      overlayParts.length
+        ? `${overlayParts.join(" + ")}: пересчёт ${symbols.length} готовых тикеров (наборы те же).`
+        : "Оверлей выключен: цифры без СЛ и без compound."
     );
     this.emit("state");
     let done = 0;
@@ -398,7 +412,7 @@ export class ScanController {
       }
       const row = this.rows[symbol];
       const prevNet = Number(row.best?.overview?.netProfit);
-      const painted = await this.paintRowBest(row, enabled, pct);
+      const painted = await this.paintRowBest(row, this.config);
       const nextNet = Number(painted?.overview?.netProfit);
       if (
         Number.isFinite(prevNet) &&
@@ -420,9 +434,9 @@ export class ScanController {
     }
     await this.persist();
     this.note(
-      enabled
-        ? `СЛ цикла ${pct}%: изменились ${changed} из ${done} тикеров.`
-        : `СЛ цикла выключен: вернул ${changed} из ${done} тикеров.`
+      overlayParts.length
+        ? `${overlayParts.join(" + ")}: изменились ${changed} из ${done} тикеров.`
+        : `Оверлей выключен: вернул ${changed} из ${done} тикеров.`
     );
     this.emit("state");
   }
@@ -766,6 +780,9 @@ export class ScanController {
       "profitFactor",
       "maxDrawdown",
       "maxDrawdownPct",
+      "maxTradeMae",
+      "maxTradeMaePct",
+      "liquidations",
       "avgTrade",
       "avgTradePct",
       "avgBars",
@@ -806,6 +823,9 @@ export class ScanController {
         o.profitFactor ?? "",
         o.maxDrawdown ?? "",
         o.maxDrawdownPct ?? "",
+        o.maxTradeMae ?? "",
+        o.maxTradeMaePct ?? "",
+        o.liquidations ?? "",
         o.avgTrade ?? "",
         o.avgTradePct ?? "",
         o.avgBars ?? "",

@@ -1,4 +1,4 @@
-import { configFingerprint, normalizeConfig } from "../client/defaults.js";
+import { configFingerprint, normalizeConfig } from "../src/defaults.js";
 
 function nowIso() {
   return new Date().toISOString();
@@ -96,6 +96,9 @@ function rowFromCsvRecord(rec) {
     "profitFactor",
     "maxDrawdown",
     "maxDrawdownPct",
+    "maxTradeMae",
+    "maxTradeMaePct",
+    "liquidations",
     "avgTrade",
     "avgTradePct",
     "avgBars"
@@ -161,6 +164,7 @@ function csvToSnapshot(text) {
 
 /**
  * @param {unknown} raw
+ * @returns {{ config: object, fingerprint: string, rows: Record<string, object>, startedAt: string|null, stoppedAt: string|null }}
  */
 export function normalizeImportPayload(raw) {
   const src = raw && typeof raw === "object" ? raw : {};

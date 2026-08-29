@@ -26,6 +26,9 @@ function compact(overview) {
       overview.profitFactor === Infinity ? "Infinity" : overview.profitFactor,
     maxDrawdown: overview.maxDrawdown,
     maxDrawdownPct: overview.maxDrawdownPct,
+    maxTradeMae: overview.maxTradeMae,
+    maxTradeMaePct: overview.maxTradeMaePct,
+    liquidations: overview.liquidations,
     avgTrade: overview.avgTrade,
     avgTradePct: overview.avgTradePct,
     avgBars: overview.avgBars

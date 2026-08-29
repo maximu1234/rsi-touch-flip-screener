@@ -11,6 +11,7 @@ export const DEFAULT_CONFIG = {
   trainPct: 70,
   cycleSlEnabled: false,
   cycleSlPct: 30,
+  compoundEnabled: false,
   chartPages: 10,
   workers: 2,
   fetchConcurrency: 2,
@@ -73,6 +74,7 @@ export function normalizeConfig(raw = {}) {
       90,
       Math.max(1, Number(src.cycleSlPct) || DEFAULT_CONFIG.cycleSlPct)
     ),
+    compoundEnabled: src.compoundEnabled === true,
     chartPages: Math.min(
       10,
       Math.max(1, Math.round(Number(src.chartPages) || DEFAULT_CONFIG.chartPages))
@@ -108,6 +110,7 @@ export function configFingerprint(config) {
     c.trainPct,
     c.cycleSlEnabled ? 1 : 0,
     c.cycleSlPct,
+    c.compoundEnabled ? 1 : 0,
     c.chartPages,
     c.comboLimit
   ].join("|");
@@ -124,6 +127,7 @@ export function prefsFromConfig(config) {
     commissionPct: c.commissionPct,
     cycleSlEnabled: c.cycleSlEnabled,
     cycleSlPct: c.cycleSlPct,
+    compoundEnabled: c.compoundEnabled,
     showMarks: false,
     slippageTicks: 0
   };
@@ -132,6 +136,7 @@ export function prefsFromConfig(config) {
 export function gridPrefsFromConfig(config) {
   return {
     ...prefsFromConfig(config),
-    cycleSlEnabled: false
+    cycleSlEnabled: false,
+    compoundEnabled: false
   };
 }

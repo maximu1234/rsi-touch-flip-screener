@@ -37,12 +37,17 @@ export function restoreFittedBest(best) {
   };
 }
 
-export function paintBestWithCycleSl(best, opts = {}) {
+/**
+ * Пересчёт метрик для уже найденного combo (СЛ цикла, Compound, …).
+ */
+export function repaintFittedBest(best, opts = {}) {
   const snapped = snapshotFittedBest(best);
   if (!snapped) {
     return null;
   }
-  if (opts.cycleSlEnabled !== true) {
+  const cycleSl = opts.cycleSlEnabled === true;
+  const compound = opts.compoundEnabled === true;
+  if (!cycleSl && !compound) {
     return restoreFittedBest(snapped);
   }
   if (!snapped.combo || !opts.candles?.length || !opts.rsiValues) {
@@ -56,8 +61,9 @@ export function paintBestWithCycleSl(best, opts = {}) {
     prefs: {
       ...(opts.basePrefs || {}),
       ...snapped.combo,
-      cycleSlEnabled: true,
-      cycleSlPct: opts.cycleSlPct
+      cycleSlEnabled: cycleSl,
+      cycleSlPct: opts.cycleSlPct,
+      compoundEnabled: compound
     }
   });
   if (!scored) {
@@ -71,4 +77,9 @@ export function paintBestWithCycleSl(best, opts = {}) {
     test: scored.test,
     verdict: scored.verdict
   };
+}
+
+/** @deprecated use repaintFittedBest */
+export function paintBestWithCycleSl(best, opts = {}) {
+  return repaintFittedBest(best, opts);
 }

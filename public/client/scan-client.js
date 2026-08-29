@@ -1,6 +1,6 @@
 import { listRsiTouchFlipOptimizeCombos } from "../lib/rsi-touch-flip-optimize.js";
 import {
-  paintBestWithCycleSl,
+  repaintFittedBest,
   snapshotFittedBest
 } from "../lib/rsi-touch-flip-overlay.js";
 import {
@@ -175,47 +175,101 @@ async function loadCachedHistory(config, symbol) {
 
 function paintWorkerBest(best, history) {
   const snapped = snapshotFittedBest(best);
-  if (!session.config.cycleSlEnabled || !snapped?.combo || !history?.candles?.length) {
+  const cfg = session.config;
+  const needsRepaint = cfg.cycleSlEnabled || cfg.compoundEnabled;
+  if (!needsRepaint || !snapped?.combo || !history?.candles?.length) {
     return snapped;
   }
   const rsiValues = buildRsiForLen(
     history.candles,
     history.sourceCandles,
-    session.config.chartTf,
-    session.config.rsiTf,
+    cfg.chartTf,
+    cfg.rsiTf,
     snapped.combo.rsiLen
   );
-  return paintBestWithCycleSl(snapped, {
+  return repaintFittedBest(snapped, {
     candles: history.candles,
     rsiValues,
-    chartTf: session.config.chartTf,
-    trainPct: session.config.trainPct,
-    cycleSlEnabled: true,
-    cycleSlPct: session.config.cycleSlPct,
-    basePrefs: gridPrefsFromConfig(session.config)
+    chartTf: cfg.chartTf,
+    trainPct: cfg.trainPct,
+    cycleSlEnabled: cfg.cycleSlEnabled === true,
+    cycleSlPct: cfg.cycleSlPct,
+    compoundEnabled: cfg.compoundEnabled === true,
+    basePrefs: gridPrefsFromConfig(cfg)
+  });
+}
+
+async function repaintRowBest(row, config) {
+  if (!row?.best?.combo) {
+    return row?.best || null;
+  }
+  const snapped = snapshotFittedBest(row.best);
+  const cycleSl = config.cycleSlEnabled === true;
+  const compound = config.compoundEnabled === true;
+  if (!cycleSl && !compound) {
+    return snapped?.fitted
+      ? {
+          ...snapped,
+          overview: snapped.fitted.overview,
+          train: snapped.fitted.train,
+          test: snapped.fitted.test,
+          verdict: snapped.fitted.verdict,
+          prefs: snapped.fitted.prefs
+        }
+      : snapped;
+  }
+  const history = await loadCachedHistory(config, row.symbol);
+  if (!history?.candles?.length) {
+    return snapped;
+  }
+  const rsiValues = buildRsiForLen(
+    history.candles,
+    history.sourceCandles,
+    config.chartTf,
+    config.rsiTf,
+    snapped.combo.rsiLen
+  );
+  return repaintFittedBest(snapped, {
+    candles: history.candles,
+    rsiValues,
+    chartTf: config.chartTf,
+    trainPct: config.trainPct,
+    cycleSlEnabled: cycleSl,
+    cycleSlPct: config.cycleSlPct,
+    compoundEnabled: compound,
+    basePrefs: gridPrefsFromConfig(config)
   });
 }
 
 export async function applyClientCycleSl(raw = {}, onState) {
-  const enabled = raw.cycleSlEnabled === true;
-  const pct = Math.min(
+  const cycleSlEnabled = raw.cycleSlEnabled === true;
+  const cycleSlPct = Math.min(
     90,
     Math.max(1, Number(raw.cycleSlPct) || session.config.cycleSlPct || 30)
   );
+  const compoundEnabled = raw.compoundEnabled === true;
   session.config = normalizeConfig({
     ...session.config,
-    cycleSlEnabled: enabled,
-    cycleSlPct: pct
+    cycleSlEnabled,
+    cycleSlPct,
+    compoundEnabled
   });
   session.overlayGen += 1;
   const gen = session.overlayGen;
   const symbols = Object.keys(session.rows).filter(
     (symbol) => session.rows[symbol]?.best?.combo
   );
+  const overlayParts = [];
+  if (cycleSlEnabled) {
+    overlayParts.push(`СЛ ${cycleSlPct}%`);
+  }
+  if (compoundEnabled) {
+    overlayParts.push("Compound");
+  }
   note(
-    enabled
-      ? `СЛ цикла ${pct}%: пересчёт ${symbols.length} готовых тикеров (наборы те же).`
-      : "СЛ цикла выключен: цифры без стопа."
+    overlayParts.length
+      ? `${overlayParts.join(" + ")}: пересчёт ${symbols.length} готовых тикеров (наборы те же).`
+      : "Оверлей выключен: цифры без СЛ и без compound."
   );
   onState?.(publicState());
   let done = 0;
@@ -225,39 +279,8 @@ export async function applyClientCycleSl(raw = {}, onState) {
       return publicState();
     }
     const row = session.rows[symbol];
-    const snapped = snapshotFittedBest(row.best);
     const prevNet = Number(row.best?.overview?.netProfit);
-    let painted = snapped;
-    if (enabled === true) {
-      const history = await loadCachedHistory(session.config, symbol);
-      if (history?.candles?.length) {
-        const rsiValues = buildRsiForLen(
-          history.candles,
-          history.sourceCandles,
-          session.config.chartTf,
-          session.config.rsiTf,
-          snapped.combo.rsiLen
-        );
-        painted = paintBestWithCycleSl(snapped, {
-          candles: history.candles,
-          rsiValues,
-          chartTf: session.config.chartTf,
-          trainPct: session.config.trainPct,
-          cycleSlEnabled: true,
-          cycleSlPct: pct,
-          basePrefs: gridPrefsFromConfig(session.config)
-        });
-      }
-    } else if (snapped?.fitted) {
-      painted = {
-        ...snapped,
-        overview: snapped.fitted.overview,
-        train: snapped.fitted.train,
-        test: snapped.fitted.test,
-        verdict: snapped.fitted.verdict,
-        prefs: snapped.fitted.prefs
-      };
-    }
+    const painted = await repaintRowBest(row, session.config);
     const nextNet = Number(painted?.overview?.netProfit);
     if (
       Number.isFinite(prevNet) &&
@@ -278,9 +301,9 @@ export async function applyClientCycleSl(raw = {}, onState) {
   }
   await persist();
   note(
-    enabled
-      ? `СЛ цикла ${pct}%: изменились ${changed} из ${done} тикеров.`
-      : `СЛ цикла выключен: вернул ${changed} из ${done} тикеров.`
+    overlayParts.length
+      ? `${overlayParts.join(" + ")}: изменились ${changed} из ${done} тикеров.`
+      : `Оверлей выключен: вернул ${changed} из ${done} тикеров.`
   );
   const snap = publicState();
   onState?.(snap);

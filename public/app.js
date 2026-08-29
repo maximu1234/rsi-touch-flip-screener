@@ -293,7 +293,7 @@ function renderTable() {
   tbody.innerHTML = rows
     .map((row) => {
       if (row.error) {
-        return `<tr class="is-error"><td>${row.symbol}</td><td class="no">ошибка</td><td colspan="19">${row.error}</td></tr>`;
+        return `<tr class="is-error"><td>${row.symbol}</td><td class="no">ошибка</td><td colspan="21">${row.error}</td></tr>`;
       }
       const o = row.best?.overview;
       const c = row.best?.combo;
@@ -310,7 +310,7 @@ function renderTable() {
             : row.status === "queued"
               ? "is-wait"
               : "";
-        return `<tr class="${kind}"><td>${row.symbol}</td><td class="muted">${label}</td>${emptyCells(19)}</tr>`;
+        return `<tr class="${kind}"><td>${row.symbol}</td><td class="muted">${label}</td>${emptyCells(21)}</tr>`;
       }
       const ok = row.best?.verdict?.ok;
       return `<tr>
@@ -333,6 +333,11 @@ function renderTable() {
           num(o?.maxDrawdown) == null ? null : -Math.abs(o.maxDrawdown),
           num(o?.maxDrawdownPct) == null ? null : -Math.abs(o.maxDrawdownPct)
         )}
+        ${moneyCell(
+          num(o?.maxTradeMae) == null ? null : -Math.abs(o.maxTradeMae),
+          num(o?.maxTradeMaePct) == null ? null : -Math.abs(o.maxTradeMaePct)
+        )}
+        <td>${fmt(o?.liquidations, 0)}</td>
         ${moneyCell(o?.avgTrade, o?.avgTradePct)}
         <td>${fmt(o?.avgBars, 1)}</td>
         ${moneyCell(row.best?.train?.netProfit, row.best?.train?.netProfitPct)}
@@ -477,6 +482,7 @@ function readForm() {
     comboLimit: Number(data.get("comboLimit")),
     cycleSlEnabled: form.elements.cycleSlEnabled.checked,
     cycleSlPct: Number(data.get("cycleSlPct")),
+    compoundEnabled: form.elements.compoundEnabled.checked,
     force: form.elements.force.checked
   };
 }
@@ -489,6 +495,7 @@ function fillForm(config, opts = {}) {
   if (opts.keepCycleSl) {
     skip.add("cycleSlEnabled");
     skip.add("cycleSlPct");
+    skip.add("compoundEnabled");
   }
   for (const [key, value] of Object.entries(config)) {
     if (skip.has(key)) {
@@ -676,7 +683,8 @@ function queueCycleSl() {
 async function sendCycleSl() {
   const body = {
     cycleSlEnabled: form.elements.cycleSlEnabled.checked,
-    cycleSlPct: Number(form.elements.cycleSlPct.value)
+    cycleSlPct: Number(form.elements.cycleSlPct.value),
+    compoundEnabled: form.elements.compoundEnabled.checked
   };
   if (!useBackend) {
     try {
@@ -705,6 +713,10 @@ form.elements.cycleSlEnabled.addEventListener("change", () => {
   queueCycleSl();
 });
 form.elements.cycleSlPct.addEventListener("change", () => {
+  cycleSlTouched = true;
+  queueCycleSl();
+});
+form.elements.compoundEnabled.addEventListener("change", () => {
   cycleSlTouched = true;
   queueCycleSl();
 });

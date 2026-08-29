@@ -76,6 +76,10 @@
     <label>СЛ %
       <input name="cycleSlPct" type="number" min="1" max="90" value="30" />
     </label>
+    <label class="check" title="Размер позиции от текущего equity, а не фиксированного бюджета. Пересчёт без новой сетки.">
+      <input name="compoundEnabled" type="checkbox" />
+      Compound
+    </label>
     <label class="check">
       <input name="force" type="checkbox" />
       Пересчитать готовые
@@ -111,6 +115,8 @@
           <th data-sort="percentProfitable">Win%</th>
           <th data-sort="profitFactor">PF</th>
           <th data-sort="maxDrawdownPct">Просадка</th>
+          <th data-sort="maxTradeMaePct" title="Максимальный нереализованный минус открытой сделки">Макс. минус</th>
+          <th data-sort="liquidations" title="Число ликвидаций (equity ≤ 0)">Ликв.</th>
           <th data-sort="avgTrade">Ср. сделка</th>
           <th data-sort="avgBars">Ср. баров</th>
           <th data-sort="trainNet">Train</th>

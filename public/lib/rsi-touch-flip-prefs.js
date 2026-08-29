@@ -6,6 +6,10 @@
 export const RSI_TOUCH_FLIP_PREFS_KEY =
 "algo_trading_rsi_touch_flip_v1";
 
+/** Параметры панели «Данные» по тикеру (анализ; не книга бота). */
+export const RSI_TOUCH_FLIP_TICKER_PREFS_KEY =
+"algo_trading_rsi_touch_flip_by_ticker_v1";
+
 export const RSI_TOUCH_FLIP_SIZE_EQUAL =
 "equal";
 
@@ -234,7 +238,11 @@ slippageTicks:
 cycleSlEnabled:
 false,
 cycleSlPct:
-30
+30,
+invertEntries:
+false,
+compoundEnabled:
+false
 };
 
 }
@@ -351,7 +359,13 @@ src.cycleSlPct,
 1,
 90,
 base.cycleSlPct
-)
+),
+invertEntries:
+src.invertEntries ===
+true,
+compoundEnabled:
+src.compoundEnabled ===
+true
 };
 
 }
@@ -416,6 +430,223 @@ return next;
 
 }
 
+/**
+ * @param {unknown} symbol
+ * @returns {string}
+ */
+export function normalizeRsiTouchFlipTickerSymbol(
+symbol
+){
+
+return String(
+symbol ||
+""
+).replace(
+/\.P$/i,
+""
+).trim().toUpperCase();
+
+}
+
+function readRsiTouchFlipTickerRoot(){
+
+try{
+const raw =
+localStorage.getItem(
+RSI_TOUCH_FLIP_TICKER_PREFS_KEY
+);
+
+if(
+!raw
+){
+return {};
+}
+
+const parsed =
+JSON.parse(
+raw
+);
+
+return parsed &&
+typeof parsed ===
+"object" &&
+!Array.isArray(
+parsed
+)
+? parsed
+: {};
+}catch{
+return {};
+}
+
+}
+
+function writeRsiTouchFlipTickerRoot(
+root
+){
+
+try{
+localStorage.setItem(
+RSI_TOUCH_FLIP_TICKER_PREFS_KEY,
+JSON.stringify(
+root
+)
+);
+}catch(
+err
+){
+console.warn(
+"[algo-trading] rsi touch flip ticker prefs persist",
+err
+);
+}
+
+}
+
+/**
+ * @param {string} symbol
+ * @returns {object|null}
+ */
+export function loadRsiTouchFlipTickerPrefs(
+symbol
+){
+
+const key =
+normalizeRsiTouchFlipTickerSymbol(
+symbol
+);
+
+if(
+!key
+){
+return null;
+}
+
+const raw =
+readRsiTouchFlipTickerRoot()[key];
+
+if(
+!raw
+){
+return null;
+}
+
+return normalizeRsiTouchFlipPrefs(
+raw
+);
+
+}
+
+/**
+ * @param {string} symbol
+ * @returns {boolean}
+ */
+export function hasRsiTouchFlipTickerPrefs(
+symbol
+){
+
+const key =
+normalizeRsiTouchFlipTickerSymbol(
+symbol
+);
+
+return !!(
+key &&
+readRsiTouchFlipTickerRoot()[key]
+);
+
+}
+
+/**
+ * @param {string} symbol
+ * @param {object} [patch]
+ * @returns {object|null}
+ */
+export function saveRsiTouchFlipTickerPrefs(
+symbol,
+patch =
+{}
+){
+
+const key =
+normalizeRsiTouchFlipTickerSymbol(
+symbol
+);
+
+if(
+!key
+){
+return null;
+}
+
+const root =
+readRsiTouchFlipTickerRoot();
+const prev =
+root[key]
+? normalizeRsiTouchFlipPrefs(
+root[key]
+)
+: defaultRsiTouchFlipPrefs();
+const next =
+normalizeRsiTouchFlipPrefs(
+{
+...prev,
+...patch
+}
+);
+root[key] =
+next;
+writeRsiTouchFlipTickerRoot(
+root
+);
+
+try{
+localStorage.setItem(
+RSI_TOUCH_FLIP_PREFS_KEY,
+JSON.stringify(
+next
+)
+);
+}catch{
+/* ignore quota */
+}
+
+return next;
+
+}
+
+/**
+ * Подставить сохранённые параметры тикера в общий буфер панели.
+ * @param {string} symbol
+ * @returns {object}
+ */
+export function hydrateRsiTouchFlipPrefsForSymbol(
+symbol
+){
+
+const stored =
+loadRsiTouchFlipTickerPrefs(
+symbol
+);
+const next =
+stored ||
+defaultRsiTouchFlipPrefs();
+
+try{
+localStorage.setItem(
+RSI_TOUCH_FLIP_PREFS_KEY,
+JSON.stringify(
+next
+)
+);
+}catch{
+/* ignore quota */
+}
+
+return next;
+
+}
+
 export const RSI_TOUCH_FLIP_BOT_PREFS_KEY =
 "algo_trading_rsi_touch_flip_bot_v1";
 
@@ -458,7 +689,10 @@ p.sizeMult,
 cycleSlEnabled:
 p.cycleSlEnabled,
 cycleSlPct:
-p.cycleSlPct
+p.cycleSlPct,
+invertEntries:
+p.invertEntries ===
+true
 };
 
 }
