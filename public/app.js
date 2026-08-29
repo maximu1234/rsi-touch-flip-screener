@@ -1,6 +1,7 @@
 import {
   exportClientCsv,
   exportClientJson,
+  hydrateClientSession,
   importClientSnapshot,
   loadClientState,
   startClientScan,
@@ -434,6 +435,9 @@ function saveLocal(snap) {
 
 function applyState(next, opts = {}) {
   state = next || state;
+  if (!useBackend && state.rows?.length) {
+    hydrateClientSession(state);
+  }
   renderChrome();
   const stamp = (state.rows || [])
     .map(
@@ -681,16 +685,13 @@ function queueCycleSl() {
 }
 
 async function sendCycleSl() {
-  const body = {
-    cycleSlEnabled: form.elements.cycleSlEnabled.checked,
-    cycleSlPct: Number(form.elements.cycleSlPct.value),
-    compoundEnabled: form.elements.compoundEnabled.checked
-  };
+  hydrateClientSession(state);
+  const body = readForm();
   if (!useBackend) {
     try {
       await applyClientCycleSl(body, (snap) => applyState(snap, { force: true }));
     } catch (err) {
-      statusLine.textContent = err?.message || "Не удалось пересчитать СЛ";
+      statusLine.textContent = err?.message || "Не удалось пересчитать оверлей";
     }
     return;
   }

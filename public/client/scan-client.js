@@ -173,6 +173,58 @@ async function loadCachedHistory(config, symbol) {
   return { candles, sourceCandles };
 }
 
+/** Свечи для оверлея: кэш → повторная загрузка с Bybit. */
+async function loadHistoryForRepaint(config, symbol) {
+  const cached = await loadCachedHistory(config, symbol);
+  if (cached?.candles?.length) {
+    return { history: cached, source: "cache" };
+  }
+  try {
+    const history = await loadHistory(config, symbol);
+    if (history?.candles?.length) {
+      return { history, source: "fetch" };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { history: null, source: "miss" };
+}
+
+function rowsToMap(rows) {
+  if (!rows) {
+    return {};
+  }
+  if (!Array.isArray(rows)) {
+    return { ...rows };
+  }
+  const out = {};
+  for (const row of rows) {
+    if (row?.symbol) {
+      out[row.symbol] = row;
+    }
+  }
+  return out;
+}
+
+/** Синхронизировать session с таблицей из localStorage / импорта. */
+export function hydrateClientSession(snap = {}) {
+  const rows = rowsToMap(snap.rows);
+  if (!Object.keys(rows).length) {
+    return false;
+  }
+  session.config = normalizeConfig({ ...session.config, ...(snap.config || {}) });
+  session.fingerprint = String(
+    snap.fingerprint || configFingerprint(session.config)
+  );
+  session.rows = rows;
+  session.startedAt = snap.startedAt || session.startedAt;
+  session.stoppedAt = snap.stoppedAt || session.stoppedAt;
+  session.progress.total = Object.keys(rows).length;
+  session.progress.done = Object.values(rows).filter(isRowFinished).length;
+  session.progress.phase = "saved";
+  return true;
+}
+
 function paintWorkerBest(best, history) {
   const snapped = snapshotFittedBest(best);
   const cfg = session.config;
@@ -199,28 +251,34 @@ function paintWorkerBest(best, history) {
   });
 }
 
-async function repaintRowBest(row, config) {
+async function repaintRowBest(row, config, limitFetch) {
   if (!row?.best?.combo) {
-    return row?.best || null;
+    return { best: row?.best || null, miss: false };
   }
   const snapped = snapshotFittedBest(row.best);
   const cycleSl = config.cycleSlEnabled === true;
   const compound = config.compoundEnabled === true;
   if (!cycleSl && !compound) {
-    return snapped?.fitted
-      ? {
-          ...snapped,
-          overview: snapped.fitted.overview,
-          train: snapped.fitted.train,
-          test: snapped.fitted.test,
-          verdict: snapped.fitted.verdict,
-          prefs: snapped.fitted.prefs
-        }
-      : snapped;
+    return {
+      best: snapped?.fitted
+        ? {
+            ...snapped,
+            overview: snapped.fitted.overview,
+            train: snapped.fitted.train,
+            test: snapped.fitted.test,
+            verdict: snapped.fitted.verdict,
+            prefs: snapped.fitted.prefs
+          }
+        : snapped,
+      miss: false
+    };
   }
-  const history = await loadCachedHistory(config, row.symbol);
+  const load = limitFetch
+    ? () => limitFetch(() => loadHistoryForRepaint(config, row.symbol))
+    : () => loadHistoryForRepaint(config, row.symbol);
+  const { history, source } = await load();
   if (!history?.candles?.length) {
-    return snapped;
+    return { best: snapped, miss: true };
   }
   const rsiValues = buildRsiForLen(
     history.candles,
@@ -229,7 +287,7 @@ async function repaintRowBest(row, config) {
     config.rsiTf,
     snapped.combo.rsiLen
   );
-  return repaintFittedBest(snapped, {
+  const painted = repaintFittedBest(snapped, {
     candles: history.candles,
     rsiValues,
     chartTf: config.chartTf,
@@ -239,6 +297,7 @@ async function repaintRowBest(row, config) {
     compoundEnabled: compound,
     basePrefs: gridPrefsFromConfig(config)
   });
+  return { best: painted, miss: source === "miss" };
 }
 
 export async function applyClientCycleSl(raw = {}, onState) {
@@ -250,6 +309,7 @@ export async function applyClientCycleSl(raw = {}, onState) {
   const compoundEnabled = raw.compoundEnabled === true;
   session.config = normalizeConfig({
     ...session.config,
+    ...raw,
     cycleSlEnabled,
     cycleSlPct,
     compoundEnabled
@@ -266,21 +326,36 @@ export async function applyClientCycleSl(raw = {}, onState) {
   if (compoundEnabled) {
     overlayParts.push("Compound");
   }
+  if (!symbols.length) {
+    note("Оверлей: нет готовых строк — сначала завершите подбор или загрузите результат.");
+    const snap = publicState();
+    onState?.(snap);
+    return snap;
+  }
   note(
     overlayParts.length
-      ? `${overlayParts.join(" + ")}: пересчёт ${symbols.length} готовых тикеров (наборы те же).`
-      : "Оверлей выключен: цифры без СЛ и без compound."
+      ? `${overlayParts.join(" + ")}: пересчёт ${symbols.length} тикеров…`
+      : "Оверлей выключен: возврат к базовым цифрам…"
   );
   onState?.(publicState());
+  const limitFetch = createLimiter(Math.min(3, session.config.fetchConcurrency || 2));
   let done = 0;
   let changed = 0;
+  let missed = 0;
   for (const symbol of symbols) {
     if (gen !== session.overlayGen) {
       return publicState();
     }
     const row = session.rows[symbol];
     const prevNet = Number(row.best?.overview?.netProfit);
-    const painted = await repaintRowBest(row, session.config);
+    const { best: painted, miss } = await repaintRowBest(
+      row,
+      session.config,
+      limitFetch
+    );
+    if (miss) {
+      missed += 1;
+    }
     const nextNet = Number(painted?.overview?.netProfit);
     if (
       Number.isFinite(prevNet) &&
@@ -295,11 +370,16 @@ export async function applyClientCycleSl(raw = {}, onState) {
       updatedAt: nowIso()
     };
     done += 1;
-    if (done % 6 === 0) {
+    if (done % 4 === 0) {
       onState?.(publicState());
     }
   }
   await persist();
+  if (missed > 0) {
+    note(
+      `Не удалось пересчитать ${missed} тикеров (нет свечей). Запустите подбор заново или проверьте сеть.`
+    );
+  }
   note(
     overlayParts.length
       ? `${overlayParts.join(" + ")}: изменились ${changed} из ${done} тикеров.`
@@ -315,17 +395,8 @@ export async function loadClientState() {
   if (!saved?.rows) {
     return null;
   }
-  session.config = normalizeConfig(saved.config || {});
-  session.fingerprint = String(
-    saved.fingerprint || configFingerprint(session.config)
-  );
-  session.rows = saved.rows;
-  session.startedAt = saved.startedAt || null;
-  session.stoppedAt = saved.stoppedAt || null;
+  hydrateClientSession(saved);
   session.log = Array.isArray(saved.log) ? saved.log : [];
-  session.progress.total = Number(saved.total) || Object.keys(session.rows).length;
-  session.progress.done = Object.values(session.rows).filter(isRowFinished).length;
-  session.progress.phase = Object.keys(session.rows).length ? "saved" : "idle";
   return publicState();
 }
 
