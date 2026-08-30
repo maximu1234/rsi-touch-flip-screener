@@ -144,6 +144,7 @@ td.suitability {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   min-width: 4.5rem;
+  cursor: help;
 }
 th:last-child,
 td.suitability {
