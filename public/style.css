@@ -43,6 +43,7 @@ h1 { margin: 0 0 4px; font-size: 18px; font-weight: 650; }
 }
 .btn.ghost { background: var(--panel); border: 1px solid var(--line); color: var(--text); }
 .btn.danger { background: #da3633; }
+.btn.pause { background: #9e6a03; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 
 .controls {

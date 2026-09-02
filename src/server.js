@@ -181,6 +181,11 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/pause") {
+      controller.pause();
+      sendJson(res, 200, { ok: true });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/stop") {
       controller.stop();
       sendJson(res, 200, { ok: true });

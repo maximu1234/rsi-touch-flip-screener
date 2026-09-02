@@ -4,9 +4,10 @@ import {
   hydrateClientSession,
   importClientSnapshot,
   loadClientState,
+  pauseClientScan,
   startClientScan,
-  stopClientScan,
-  applyClientCycleSl
+  applyClientCycleSl,
+  hasUnfinishedRows
 } from "./client/scan-client.js";
 import { parseImportFile } from "./lib/import-results.js";
 import {
@@ -24,7 +25,7 @@ const countsEl = document.getElementById("counts");
 const logEl = document.getElementById("log");
 const filterEl = document.getElementById("filter");
 const btnStart = document.getElementById("btn-start");
-const btnStop = document.getElementById("btn-stop");
+const btnPause = document.getElementById("btn-pause");
 const btnSaved = document.getElementById("btn-saved");
 const btnImport = document.getElementById("btn-import");
 const importFile = document.getElementById("import-file");
@@ -225,8 +226,10 @@ function renderTable() {
 }
 
 function renderChrome() {
+  const unfinished = hasUnfinishedRows(state.rows);
   btnStart.disabled = !!state.running;
-  btnStop.disabled = !state.running;
+  btnStart.textContent = !state.running && unfinished ? "Продолжить" : "Старт";
+  btnPause.disabled = !state.running;
   const p = state.progress || {};
   const comboFrac = p.comboTotal > 0 ? p.comboDone / p.comboTotal : 0;
   const overall = p.total > 0 ? (p.done + comboFrac) / p.total : 0;
@@ -238,11 +241,15 @@ function renderChrome() {
     ? `В таблице ${rowCount} тикеров · ${p.currentSymbol || ""} · ${p.done || 0}/${p.total || 0} · комбинации ${p.comboDone || 0}/${p.comboTotal || 0}`
     : phase === "done"
       ? `Готово · в таблице ${rowCount} тикеров${savedLabel}`
-      : phase === "stopped"
-        ? `Остановлено · в таблице ${rowCount} тикеров${savedLabel}`
-        : rowCount
-          ? `Прошлый прогон · в таблице ${rowCount} тикеров${savedLabel}`
-          : state.error || "Ожидание";
+      : phase === "paused" || (state.paused && unfinished)
+        ? `На паузе · в таблице ${rowCount} тикеров · нажмите Продолжить${savedLabel}`
+        : phase === "stopped"
+          ? `Остановлено · в таблице ${rowCount} тикеров${savedLabel}`
+          : unfinished
+            ? `Недосчитано · в таблице ${rowCount} тикеров · нажмите Продолжить${savedLabel}`
+            : rowCount
+              ? `Прошлый прогон · в таблице ${rowCount} тикеров${savedLabel}`
+              : state.error || "Ожидание";
   const c = state.counts || {};
   countsEl.textContent =
     `в таблице ${rowCount} · готово ${c.done || 0} / ${c.total || 0}` +
@@ -293,6 +300,7 @@ function saveLocal(snap) {
       JSON.stringify({
         savedAt: new Date().toISOString(),
         running: false,
+        paused: snap.paused === true,
         startedAt: snap.startedAt,
         stoppedAt: snap.stoppedAt,
         config: snap.config,
@@ -310,7 +318,7 @@ function saveLocal(snap) {
 
 function applyState(next, opts = {}) {
   state = next || state;
-  if (!useBackend && state.rows?.length) {
+  if (!useBackend && state.rows?.length && !state.running) {
     hydrateClientSession(state);
   }
   renderChrome();
@@ -414,12 +422,27 @@ btnStart.addEventListener("click", async () => {
   }
 });
 
-btnStop.addEventListener("click", () => {
+function pauseScan() {
   if (!useBackend) {
-    stopClientScan();
+    pauseClientScan();
     return;
   }
-  fetch("./api/stop", { method: "POST" });
+  fetch("./api/pause", { method: "POST" }).catch(() => {
+    fetch("./api/stop", { method: "POST" });
+  });
+}
+
+btnPause.addEventListener("click", pauseScan);
+
+window.addEventListener("pagehide", () => {
+  if (!useBackend && state.running) {
+    pauseClientScan();
+  }
+});
+document.addEventListener("freeze", () => {
+  if (!useBackend && state.running) {
+    pauseClientScan();
+  }
 });
 
 document.getElementById("btn-csv").addEventListener("click", (ev) => {

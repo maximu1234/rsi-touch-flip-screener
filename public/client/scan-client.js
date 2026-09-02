@@ -95,6 +95,7 @@ function createLimiter(max) {
 
 const session = {
   running: false,
+  paused: false,
   cancel: false,
   workers: [],
   rows: {},
@@ -114,10 +115,24 @@ const session = {
   }
 };
 
+export function hasUnfinishedRows(rows) {
+  const list = Array.isArray(rows) ? rows : Object.values(rows || {});
+  return list.some((row) => row?.status === "queued" || row?.status === "running");
+}
+
+function queuedIncompleteRows() {
+  for (const row of Object.values(session.rows)) {
+    if (row?.status === "running") {
+      row.status = "queued";
+    }
+  }
+}
+
 function publicState() {
   const rows = sortRows(session.rows);
   return {
     running: session.running,
+    paused: session.paused,
     startedAt: session.startedAt,
     stoppedAt: session.stoppedAt,
     error: session.error || "",
@@ -151,10 +166,12 @@ async function persist() {
     config: session.config,
     startedAt: session.startedAt,
     stoppedAt: session.stoppedAt,
+    paused: session.paused,
     total: session.progress.total,
     updatedAt: nowIso(),
     rows: session.rows,
-    log: session.log.slice(-80)
+    log: session.log.slice(-80),
+    progress: { ...session.progress }
   });
 }
 
@@ -217,11 +234,20 @@ export function hydrateClientSession(snap = {}) {
     snap.fingerprint || configFingerprint(session.config)
   );
   session.rows = rows;
+  if (!session.running) {
+    queuedIncompleteRows();
+    session.paused =
+      snap.paused === true ||
+      snap.progress?.phase === "paused" ||
+      hasUnfinishedRows(session.rows);
+    session.progress.phase = session.paused
+      ? "paused"
+      : snap.progress?.phase || "saved";
+  }
   session.startedAt = snap.startedAt || session.startedAt;
   session.stoppedAt = snap.stoppedAt || session.stoppedAt;
   session.progress.total = Object.keys(rows).length;
   session.progress.done = Object.values(rows).filter(isRowFinished).length;
-  session.progress.phase = "saved";
   return true;
 }
 
@@ -501,10 +527,11 @@ function killWorkers() {
   session.workers = [];
 }
 
-export function stopClientScan() {
+function haltClientScan(kind) {
   if (!session.running) {
     return;
   }
+  session.paused = kind === "pause";
   session.cancel = true;
   for (const worker of session.workers) {
     try {
@@ -513,7 +540,16 @@ export function stopClientScan() {
       /* ignore */
     }
   }
-  note("Остановка…");
+  note(kind === "pause" ? "Пауза…" : "Остановка…");
+  void persist();
+}
+
+export function pauseClientScan() {
+  haltClientScan("pause");
+}
+
+export function stopClientScan() {
+  haltClientScan("stop");
 }
 
 export function exportClientCsv() {
@@ -581,11 +617,17 @@ export async function startClientScan(rawConfig, onState, onProgress) {
     throw new Error("BingX ещё не подключён. Сейчас работает только Bybit.");
   }
   const fingerprint = configFingerprint(config);
+  const resuming =
+    fingerprint === session.fingerprint &&
+    (session.paused || hasUnfinishedRows(session.rows));
   session.config = config;
   session.error = "";
   session.cancel = false;
+  session.paused = false;
   session.running = true;
-  session.startedAt = nowIso();
+  if (!resuming || !session.startedAt) {
+    session.startedAt = nowIso();
+  }
   session.stoppedAt = null;
 
   if (fingerprint !== session.fingerprint) {
@@ -604,7 +646,7 @@ export async function startClientScan(rawConfig, onState, onProgress) {
     comboDone: 0,
     comboTotal: 0
   };
-  note("Старт подбора в браузере…");
+  note(resuming ? "Продолжение подбора…" : "Старт подбора в браузере…");
   emit();
 
   try {
@@ -776,8 +818,18 @@ export async function startClientScan(rawConfig, onState, onProgress) {
     };
 
     await Promise.all(session.workers.map((worker) => runWorkerLoop(worker)));
-    session.progress.phase = session.cancel ? "stopped" : "done";
-    note(session.cancel ? "Остановлено." : "Готово.");
+    if (session.paused) {
+      queuedIncompleteRows();
+      session.progress.phase = "paused";
+      note("На паузе. Можно закрыть ноутбук; на новом месте нажмите Продолжить.");
+    } else if (session.cancel) {
+      queuedIncompleteRows();
+      session.progress.phase = "stopped";
+      note("Остановлено.");
+    } else {
+      session.progress.phase = "done";
+      note("Готово.");
+    }
   } catch (err) {
     session.error = err?.message || String(err);
     session.progress.phase = "error";

@@ -94,6 +94,7 @@ function publicState(controller) {
   });
   return {
     running: controller.running,
+    paused: controller.paused,
     startedAt: controller.startedAt,
     stoppedAt: controller.stoppedAt,
     error: controller.error,
@@ -136,6 +137,7 @@ export class ScanController {
     this.resultsFile = path.join(this.dataDir, "results.json");
     this.listeners = new Set();
     this.running = false;
+    this.paused = false;
     this.startedAt = null;
     this.stoppedAt = null;
     this.error = "";
@@ -177,7 +179,7 @@ export class ScanController {
   }
 
   canResumeInterruptedScan() {
-    if (this.running || this.stoppedAt || !this.startedAt) {
+    if (this.running || this.paused || this.stoppedAt || !this.startedAt) {
       return false;
     }
     return Object.values(this.rows).some(
@@ -203,9 +205,19 @@ export class ScanController {
     this.rows = saved.rows && typeof saved.rows === "object" ? saved.rows : {};
     this.startedAt = saved.startedAt || null;
     this.stoppedAt = saved.stoppedAt || null;
+    this.paused = saved.paused === true || saved.progress?.phase === "paused";
+    for (const row of Object.values(this.rows)) {
+      if (row?.status === "running") {
+        row.status = "queued";
+      }
+    }
     this.progress.done = Object.values(this.rows).filter((row) => isRowFinished(row)).length;
     this.progress.total = Number(saved.total) || Object.keys(this.rows).length;
-    this.progress.phase = this.rows && Object.keys(this.rows).length ? "saved" : "idle";
+    this.progress.phase = this.paused
+      ? "paused"
+      : this.rows && Object.keys(this.rows).length
+        ? "saved"
+        : "idle";
   }
 
   async persist() {
@@ -214,8 +226,10 @@ export class ScanController {
       config: this.config,
       startedAt: this.startedAt,
       stoppedAt: this.stoppedAt,
+      paused: this.paused,
       total: this.progress.total,
       updatedAt: nowIso(),
+      progress: { ...this.progress },
       rows: this.rows
     });
   }
@@ -536,11 +550,20 @@ export class ScanController {
     }
     const config = normalizeConfig(rawConfig);
     const fingerprint = configFingerprint(config);
+    const resuming =
+      fingerprint === this.fingerprint &&
+      (this.paused ||
+        Object.values(this.rows).some(
+          (row) => row.status === "queued" || row.status === "running"
+        ));
     this.config = config;
     this.error = "";
     this.cancel = { cancelled: false };
+    this.paused = false;
     this.running = true;
-    this.startedAt = nowIso();
+    if (!resuming || !this.startedAt) {
+      this.startedAt = nowIso();
+    }
     this.stoppedAt = null;
 
     if (fingerprint !== this.fingerprint) {
@@ -559,12 +582,20 @@ export class ScanController {
       comboDone: 0,
       comboTotal: 0
     };
-    this.note("Старт подбора…");
+    this.note(resuming ? "Продолжение подбора…" : "Старт подбора…");
 
     try {
       await this.runScan(config);
-      this.progress.phase = this.cancel.cancelled ? "stopped" : "done";
-      this.note(this.cancel.cancelled ? "Остановлено." : "Готово.");
+      if (this.paused) {
+        this.progress.phase = "paused";
+        this.note("На паузе. Когда будете на месте — нажмите Продолжить.");
+      } else if (this.cancel.cancelled) {
+        this.progress.phase = "stopped";
+        this.note("Остановлено.");
+      } else {
+        this.progress.phase = "done";
+        this.note("Готово.");
+      }
     } catch (err) {
       this.error = err?.message || String(err);
       this.progress.phase = "error";
@@ -579,10 +610,11 @@ export class ScanController {
     }
   }
 
-  stop() {
+  pause() {
     if (!this.running) {
       return;
     }
+    this.paused = true;
     this.cancel.cancelled = true;
     for (const worker of this.workers) {
       try {
@@ -591,8 +623,12 @@ export class ScanController {
         /* ignore */
       }
     }
-    this.note("Остановка…");
+    this.note("Пауза…");
     this.emit();
+  }
+
+  stop() {
+    this.pause();
   }
 
   async runScan(config) {
@@ -677,6 +713,11 @@ export class ScanController {
         }
 
         if (this.cancel.cancelled) {
+          this.rows[symbol] = {
+            symbol,
+            status: "queued",
+            updatedAt: nowIso()
+          };
           return;
         }
         if (!history.candles?.length) {
@@ -753,6 +794,14 @@ export class ScanController {
     };
 
     await Promise.all(workers.map((worker) => runWorkerLoop(worker)));
+    if (this.cancel.cancelled) {
+      for (const row of Object.values(this.rows)) {
+        if (row?.status === "running") {
+          row.status = "queued";
+          row.updatedAt = nowIso();
+        }
+      }
+    }
   }
 
   toCsv() {
