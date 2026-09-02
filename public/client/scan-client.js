@@ -21,6 +21,7 @@ import {
   saveSavedResults
 } from "./idb.js";
 import { sourceEndMs, sourcePagesForChart, buildRsiForLen } from "./rsi-prep.js";
+import { pickScanSymbols } from "./scan-resume.js";
 
 function nowIso() {
   return new Date().toISOString();
@@ -616,6 +617,8 @@ export async function startClientScan(rawConfig, onState, onProgress) {
   if (config.exchange !== "bybit") {
     throw new Error("BingX ещё не подключён. Сейчас работает только Bybit.");
   }
+  const prevConfig = session.config;
+  const prevRows = session.rows;
   const fingerprint = configFingerprint(config);
   const resuming =
     fingerprint === session.fingerprint &&
@@ -650,7 +653,26 @@ export async function startClientScan(rawConfig, onState, onProgress) {
   emit();
 
   try {
-    const symbols = await resolveUniverse(config);
+    let symbols = pickScanSymbols(config, prevConfig, prevRows, resuming);
+    if (!symbols) {
+      try {
+        symbols = await resolveUniverse(config);
+      } catch (err) {
+        const fallback = pickScanSymbols(
+          { symbols: [] },
+          prevConfig,
+          prevRows,
+          true
+        );
+        if (!fallback?.length) {
+          throw err;
+        }
+        note(
+          "Список тикеров с биржи недоступен — продолжаю сохранённую очередь."
+        );
+        symbols = fallback;
+      }
+    }
     if (config.force) {
       session.rows = {};
     }

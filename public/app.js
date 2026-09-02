@@ -8,7 +8,7 @@ import {
   startClientScan,
   applyClientCycleSl,
   hasUnfinishedRows
-} from "./client/scan-client.js";
+} from "./client/scan-client.js?v=8";
 import { parseImportFile } from "./lib/import-results.js";
 import {
   rsiTouchFlipSuitabilityDetail,
@@ -398,7 +398,9 @@ function fillForm(config, opts = {}) {
       el.value = value;
     }
   }
-  form.elements.symbols.value = "";
+  form.elements.symbols.value = Array.isArray(config.symbols) && config.symbols.length
+    ? config.symbols.join(", ")
+    : "";
   form.elements.comboLimit.value = "0";
 }
 

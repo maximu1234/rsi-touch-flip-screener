@@ -20,6 +20,7 @@ import {
   sourcePagesForChart
 } from "./rsi-prep.js";
 import { rsiTouchFlipSuitabilityScore } from "../lib/suitability-score.js";
+import { pickScanSymbols } from "./scan-resume.js";
 
 const WORKER_PATH = fileURLToPath(new URL("./worker.js", import.meta.url));
 
@@ -549,6 +550,8 @@ export class ScanController {
       throw new Error("Подбор уже идёт");
     }
     const config = normalizeConfig(rawConfig);
+    const prevConfig = this.config;
+    const prevRows = this.rows;
     const fingerprint = configFingerprint(config);
     const resuming =
       fingerprint === this.fingerprint &&
@@ -585,7 +588,7 @@ export class ScanController {
     this.note(resuming ? "Продолжение подбора…" : "Старт подбора…");
 
     try {
-      await this.runScan(config);
+      await this.runScan(config, { resuming, prevConfig, prevRows });
       if (this.paused) {
         this.progress.phase = "paused";
         this.note("На паузе. Когда будете на месте — нажмите Продолжить.");
@@ -631,8 +634,32 @@ export class ScanController {
     this.pause();
   }
 
-  async runScan(config) {
-    const symbols = await this.resolveUniverse(config);
+  async runScan(config, resume = {}) {
+    let symbols = pickScanSymbols(
+      config,
+      resume.prevConfig,
+      resume.prevRows,
+      resume.resuming
+    );
+    if (!symbols) {
+      try {
+        symbols = await this.resolveUniverse(config);
+      } catch (err) {
+        const fallback = pickScanSymbols(
+          { symbols: [] },
+          resume.prevConfig,
+          resume.prevRows,
+          true
+        );
+        if (!fallback?.length) {
+          throw err;
+        }
+        this.note(
+          "Список тикеров с биржи недоступен — продолжаю сохранённую очередь."
+        );
+        symbols = fallback;
+      }
+    }
     if (config.force) {
       this.rows = {};
     }
