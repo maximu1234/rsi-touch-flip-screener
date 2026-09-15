@@ -13,6 +13,7 @@ test("imports JSON export with rows array", () => {
           best: {
             combo: { rsiLen: 14, osLevel: 30, obLevel: 70, maxStack: 2 },
             overview: { netProfit: 12.5, closedTrades: 40 },
+            test: { netProfit: 4.2, closedTrades: 12, profitFactor: 1.3 },
             verdict: { ok: true, reasons: [] }
           }
         }

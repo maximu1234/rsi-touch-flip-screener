@@ -64,9 +64,18 @@ function sendDownload(res, filename, contentType, body) {
   res.end(body);
 }
 
+const MAX_BODY_BYTES = 32 * 1024 * 1024;
+
 async function readBody(req) {
   const chunks = [];
+  let size = 0;
   for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      const err = new Error("Слишком большой запрос");
+      err.statusCode = 413;
+      throw err;
+    }
     chunks.push(chunk);
   }
   const raw = Buffer.concat(chunks).toString("utf8");
@@ -81,8 +90,9 @@ async function serveStatic(req, res) {
   if (urlPath === "/") {
     urlPath = "/index.html";
   }
-  const file = path.normalize(path.join(PUBLIC, urlPath));
-  if (!file.startsWith(PUBLIC)) {
+  const publicRoot = path.resolve(PUBLIC);
+  const file = path.resolve(path.join(PUBLIC, urlPath));
+  if (file !== publicRoot && !file.startsWith(publicRoot + path.sep)) {
     res.writeHead(403);
     res.end();
     return;
@@ -203,7 +213,10 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404);
     res.end("Not found");
   } catch (err) {
-    sendJson(res, 500, { ok: false, error: err?.message || String(err) });
+    sendJson(res, Number(err.statusCode) || 500, {
+      ok: false,
+      error: err?.message || String(err)
+    });
   }
 });
 

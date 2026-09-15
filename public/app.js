@@ -9,8 +9,9 @@ import {
   startClientScan,
   applyClientCycleSl,
   hasUnfinishedRows
-} from "./client/scan-client.js?v=10";
+} from "./client/scan-client.js?v=11";
 import { parseImportFile } from "./lib/import-results.js";
+import { escapeHtml } from "./lib/screener-defaults.js";
 import { formatRsiTouchFlipOverviewBestNote } from "./lib/rsi-touch-flip-walkforward.js";
 import {
   rsiTouchFlipSuitabilityDetail,
@@ -75,11 +76,17 @@ let sortDir = "desc";
 let lastRowStamp = "";
 
 function num(value) {
+  if (value === Infinity || value === "Infinity") {
+    return Infinity;
+  }
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
 
 function fmt(value, digits = 2) {
+  if (value === Infinity || value === "Infinity") {
+    return "∞";
+  }
   const n = num(value);
   return n == null ? "—" : n.toFixed(digits);
 }
@@ -106,10 +113,7 @@ function emptyCells(count) {
 }
 
 function escapeAttr(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;");
+  return escapeHtml(value);
 }
 
 function suitabilityCell(row) {
@@ -189,7 +193,7 @@ function renderTable() {
   tbody.innerHTML = rows
     .map((row) => {
       if (row.error) {
-        return `<tr class="is-error"><td>${row.symbol}</td><td class="no">ошибка</td><td colspan="21">${row.error}</td></tr>`;
+        return `<tr class="is-error"><td>${escapeHtml(row.symbol)}</td><td class="no">ошибка</td><td colspan="21">${escapeHtml(row.error)}</td></tr>`;
       }
       const o = row.best?.overview;
       const c = row.best?.combo;
@@ -206,7 +210,7 @@ function renderTable() {
             : row.status === "queued"
               ? "is-wait"
               : "";
-        return `<tr class="${kind}"><td>${row.symbol}</td><td class="muted">${label}</td>${emptyCells(21)}</tr>`;
+        return `<tr class="${kind}"><td>${escapeHtml(row.symbol)}</td><td class="muted">${escapeHtml(label)}</td>${emptyCells(21)}</tr>`;
       }
       const ok = row.best?.verdict?.ok;
       const overviewNote = formatRsiTouchFlipOverviewBestNote(row.best?.overviewBest);
@@ -217,12 +221,12 @@ function renderTable() {
             : "В сетке нет набора с зелёным Test; показан максимум Обзора")
       );
       return `<tr>
-        <td>${row.symbol}</td>
+        <td>${escapeHtml(row.symbol)}</td>
         <td class="${ok ? "ok" : "no"}" title="${okTip}">${ok ? "можно" : "нельзя"}</td>
-        <td>${c.rsiLen}</td>
-        <td>${c.osLevel}</td>
-        <td>${c.obLevel}</td>
-        <td>${c.maxStack}</td>
+        <td>${escapeHtml(c.rsiLen)}</td>
+        <td>${escapeHtml(c.osLevel)}</td>
+        <td>${escapeHtml(c.obLevel)}</td>
+        <td>${escapeHtml(c.maxStack)}</td>
         <td>${fmt(o?.chartDays, 1)}</td>
         ${moneyCell(o?.netProfit, o?.netProfitPct)}
         ${moneyCell(o?.longProfit, o?.longProfitPct)}

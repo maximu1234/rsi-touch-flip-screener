@@ -1,12 +1,8 @@
+import { csvEscape } from "../lib/screener-defaults.js";
 import { rsiTouchFlipSuitabilityScore } from "../lib/suitability-score.js";
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function csvEscape(cell) {
-  const s = String(cell);
-  return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
 }
 
 export function rowsToCsv(rows) {

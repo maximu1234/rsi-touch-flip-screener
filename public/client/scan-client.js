@@ -11,7 +11,10 @@ import {
 import {
   configFingerprint,
   gridPrefsFromConfig,
-  normalizeConfig
+  normalizeConfig,
+  sanitizeScreenerExchange,
+  sanitizeScreenerSymbol,
+  sanitizeScreenerTf
 } from "./defaults.js";
 import { downloadText, exportBasename, rowsToCsv } from "./export.js";
 import {
@@ -21,7 +24,7 @@ import {
   saveCachedKlines,
   saveSavedResults
 } from "./idb.js";
-import { sourceEndMs, sourcePagesForChart, buildRsiForLen } from "./rsi-prep.js";
+import { sourceEndMs, sourcePagesForChart, buildRsiForLen, rsiHistoryComplete } from "./rsi-prep.js";
 import { pickScanSymbols } from "./scan-resume.js";
 
 function nowIso() {
@@ -215,12 +218,12 @@ async function loadCachedHistory(config, symbol) {
 /** Свечи для оверлея: кэш → повторная загрузка с Bybit. */
 async function loadHistoryForRepaint(config, symbol) {
   const cached = await loadCachedHistory(config, symbol);
-  if (cached?.candles?.length) {
+  if (rsiHistoryComplete(config.chartTf, config.rsiTf, cached)) {
     return { history: cached, source: "cache" };
   }
   try {
     const history = await loadHistory(config, symbol);
-    if (history?.candles?.length) {
+    if (rsiHistoryComplete(config.chartTf, config.rsiTf, history)) {
       return { history, source: "fetch" };
     }
   } catch {
@@ -277,26 +280,34 @@ function paintWorkerBest(best, history) {
   const snapped = snapshotFittedBest(best);
   const cfg = session.config;
   const needsRepaint = cfg.cycleSlEnabled || cfg.compoundEnabled;
-  if (!needsRepaint || !snapped?.combo || !history?.candles?.length) {
+  if (
+    !needsRepaint ||
+    !snapped?.combo ||
+    !rsiHistoryComplete(cfg.chartTf, cfg.rsiTf, history)
+  ) {
     return snapped;
   }
-  const rsiValues = buildRsiForLen(
-    history.candles,
-    history.sourceCandles,
-    cfg.chartTf,
-    cfg.rsiTf,
-    snapped.combo.rsiLen
-  );
-  return repaintFittedBest(snapped, {
-    candles: history.candles,
-    rsiValues,
-    chartTf: cfg.chartTf,
-    trainPct: cfg.trainPct,
-    cycleSlEnabled: cfg.cycleSlEnabled === true,
-    cycleSlPct: cfg.cycleSlPct,
-    compoundEnabled: cfg.compoundEnabled === true,
-    basePrefs: gridPrefsFromConfig(cfg)
-  });
+  try {
+    const rsiValues = buildRsiForLen(
+      history.candles,
+      history.sourceCandles,
+      cfg.chartTf,
+      cfg.rsiTf,
+      snapped.combo.rsiLen
+    );
+    return repaintFittedBest(snapped, {
+      candles: history.candles,
+      rsiValues,
+      chartTf: cfg.chartTf,
+      trainPct: cfg.trainPct,
+      cycleSlEnabled: cfg.cycleSlEnabled === true,
+      cycleSlPct: cfg.cycleSlPct,
+      compoundEnabled: cfg.compoundEnabled === true,
+      basePrefs: gridPrefsFromConfig(cfg)
+    });
+  } catch {
+    return snapped;
+  }
 }
 
 async function repaintRowBest(row, config, limitFetch) {
@@ -325,16 +336,21 @@ async function repaintRowBest(row, config, limitFetch) {
     ? () => limitFetch(() => loadHistoryForRepaint(config, row.symbol))
     : () => loadHistoryForRepaint(config, row.symbol);
   const { history, source } = await load();
-  if (!history?.candles?.length) {
+  if (!rsiHistoryComplete(config.chartTf, config.rsiTf, history)) {
     return { best: snapped, miss: true };
   }
-  const rsiValues = buildRsiForLen(
-    history.candles,
-    history.sourceCandles,
-    config.chartTf,
-    config.rsiTf,
-    snapped.combo.rsiLen
-  );
+  let rsiValues;
+  try {
+    rsiValues = buildRsiForLen(
+      history.candles,
+      history.sourceCandles,
+      config.chartTf,
+      config.rsiTf,
+      snapped.combo.rsiLen
+    );
+  } catch {
+    return { best: snapped, miss: true };
+  }
   const painted = repaintFittedBest(snapped, {
     candles: history.candles,
     rsiValues,
@@ -449,7 +465,13 @@ export async function loadClientState() {
 }
 
 function cacheKey(exchange, symbol, tf) {
-  return `${exchange}|${symbol}|${tf}`;
+  const safeExchange = sanitizeScreenerExchange(exchange);
+  const safeSymbol = sanitizeScreenerSymbol(symbol);
+  const safeTf = sanitizeScreenerTf(tf);
+  if (!safeSymbol || !safeTf) {
+    throw new Error("некорректный тикер или ТФ");
+  }
+  return `${safeExchange}|${safeSymbol}|${safeTf}`;
 }
 
 async function loadHistory(config, symbol) {
@@ -481,6 +503,9 @@ async function loadHistory(config, symbol) {
         sourceEndMs(candles, config.chartTf)
       );
       await saveCachedKlines(srcKey, sourceCandles);
+    }
+    if (!sourceCandles?.length) {
+      throw new Error("нет свечей RSI ТФ");
     }
   }
   return { candles, sourceCandles };
@@ -833,6 +858,15 @@ export async function startClientScan(rawConfig, onState, onProgress) {
             symbol,
             status: "error",
             error: "нет свечей",
+            updatedAt: nowIso()
+          });
+          continue;
+        }
+        if (!rsiHistoryComplete(config.chartTf, config.rsiTf, history)) {
+          await saveRow({
+            symbol,
+            status: "error",
+            error: "нет свечей RSI ТФ",
             updatedAt: nowIso()
           });
           continue;

@@ -8,14 +8,19 @@ import {
   snapshotFittedBest
 } from "../lib/rsi-touch-flip-overlay.js";
 import {
+  csvEscape,
   configFingerprint,
   DEFAULT_CONFIG,
   gridPrefsFromConfig,
-  normalizeConfig
+  normalizeConfig,
+  sanitizeScreenerExchange,
+  sanitizeScreenerSymbol,
+  sanitizeScreenerTf
 } from "./defaults.js";
 import { getExchange } from "./exchanges/index.js";
 import {
   buildRsiForLen,
+  rsiHistoryComplete,
   sourceEndMs,
   sourcePagesForChart
 } from "./rsi-prep.js";
@@ -257,7 +262,13 @@ export class ScanController {
   }
 
   cacheFile(exchange, symbol, tf) {
-    return path.join(this.dataDir, "cache", exchange, symbol, `${tf}.json`);
+    const safeExchange = sanitizeScreenerExchange(exchange);
+    const safeSymbol = sanitizeScreenerSymbol(symbol);
+    const safeTf = sanitizeScreenerTf(tf);
+    if (!safeSymbol || !safeTf) {
+      throw new Error("некорректный тикер или ТФ");
+    }
+    return path.join(this.dataDir, "cache", safeExchange, safeSymbol, `${safeTf}.json`);
   }
 
   async loadCache(exchange, symbol, tf, maxAgeHours, refresh) {
@@ -323,13 +334,13 @@ export class ScanController {
 
   async paintRowBest(row, config = this.config) {
     if (!row?.best?.combo) {
-      return row?.best || null;
+      return { best: row?.best || null, miss: false };
     }
     const snapped = snapshotFittedBest(row.best);
     const cycleSl = config.cycleSlEnabled === true;
     const compound = config.compoundEnabled === true;
     if (!cycleSl && !compound) {
-      return snapped?.fitted
+      const restored = snapped?.fitted
         ? {
             ...snapped,
             overview: snapped.fitted.overview,
@@ -339,54 +350,80 @@ export class ScanController {
             prefs: snapped.fitted.prefs
           }
         : snapped;
+      return { best: restored, miss: false };
     }
-    const history = await this.loadCachedHistory(row.symbol);
-    if (!history?.candles?.length) {
-      return snapped;
+    const history = await this.loadHistoryForRepaint(row.symbol, config);
+    if (!rsiHistoryComplete(config.chartTf, config.rsiTf, history)) {
+      return { best: snapped, miss: true };
     }
-    const rsiValues = buildRsiForLen(
-      history.candles,
-      history.sourceCandles,
-      config.chartTf,
-      config.rsiTf,
-      snapped.combo.rsiLen
-    );
-    return repaintFittedBest(snapped, {
-      candles: history.candles,
-      rsiValues,
-      chartTf: config.chartTf,
-      trainPct: config.trainPct,
-      cycleSlEnabled: cycleSl,
-      cycleSlPct: config.cycleSlPct,
-      compoundEnabled: compound,
-      basePrefs: gridPrefsFromConfig(config)
-    });
+    let rsiValues;
+    try {
+      rsiValues = buildRsiForLen(
+        history.candles,
+        history.sourceCandles,
+        config.chartTf,
+        config.rsiTf,
+        snapped.combo.rsiLen
+      );
+    } catch {
+      return { best: snapped, miss: true };
+    }
+    return {
+      best: repaintFittedBest(snapped, {
+        candles: history.candles,
+        rsiValues,
+        chartTf: config.chartTf,
+        trainPct: config.trainPct,
+        cycleSlEnabled: cycleSl,
+        cycleSlPct: config.cycleSlPct,
+        compoundEnabled: compound,
+        basePrefs: gridPrefsFromConfig(config)
+      }),
+      miss: false
+    };
+  }
+
+  async loadHistoryForRepaint(symbol, config = this.config) {
+    let history = await this.loadCachedHistory(symbol);
+    if (rsiHistoryComplete(config.chartTf, config.rsiTf, history)) {
+      return history;
+    }
+    try {
+      history = await this.loadHistory(config, symbol);
+    } catch {
+      return history;
+    }
+    return history;
   }
 
   paintWorkerBest(best, history) {
     const snapped = snapshotFittedBest(best);
     const cfg = this.config;
     const needsRepaint = cfg.cycleSlEnabled || cfg.compoundEnabled;
-    if (!needsRepaint || !snapped?.combo || !history?.candles?.length) {
+    if (!needsRepaint || !snapped?.combo || !rsiHistoryComplete(cfg.chartTf, cfg.rsiTf, history)) {
       return snapped;
     }
-    const rsiValues = buildRsiForLen(
-      history.candles,
-      history.sourceCandles,
-      cfg.chartTf,
-      cfg.rsiTf,
-      snapped.combo.rsiLen
-    );
-    return repaintFittedBest(snapped, {
-      candles: history.candles,
-      rsiValues,
-      chartTf: cfg.chartTf,
-      trainPct: cfg.trainPct,
-      cycleSlEnabled: cfg.cycleSlEnabled === true,
-      cycleSlPct: cfg.cycleSlPct,
-      compoundEnabled: cfg.compoundEnabled === true,
-      basePrefs: gridPrefsFromConfig(cfg)
-    });
+    try {
+      const rsiValues = buildRsiForLen(
+        history.candles,
+        history.sourceCandles,
+        cfg.chartTf,
+        cfg.rsiTf,
+        snapped.combo.rsiLen
+      );
+      return repaintFittedBest(snapped, {
+        candles: history.candles,
+        rsiValues,
+        chartTf: cfg.chartTf,
+        trainPct: cfg.trainPct,
+        cycleSlEnabled: cfg.cycleSlEnabled === true,
+        cycleSlPct: cfg.cycleSlPct,
+        compoundEnabled: cfg.compoundEnabled === true,
+        basePrefs: gridPrefsFromConfig(cfg)
+      });
+    } catch {
+      return snapped;
+    }
   }
 
   async applyCycleSl(raw = {}) {
@@ -422,13 +459,17 @@ export class ScanController {
     this.emit("state");
     let done = 0;
     let changed = 0;
+    let missed = 0;
     for (const symbol of symbols) {
       if (gen !== this.overlayGen) {
         return;
       }
       const row = this.rows[symbol];
       const prevNet = Number(row.best?.overview?.netProfit);
-      const painted = await this.paintRowBest(row, this.config);
+      const { best: painted, miss } = await this.paintRowBest(row, this.config);
+      if (miss) {
+        missed += 1;
+      }
       const nextNet = Number(painted?.overview?.netProfit);
       if (
         Number.isFinite(prevNet) &&
@@ -449,6 +490,11 @@ export class ScanController {
       }
     }
     await this.persist();
+    if (missed > 0) {
+      this.note(
+        `Не удалось пересчитать ${missed} тикеров (нет свечей). Запустите подбор заново или проверьте сеть.`
+      );
+    }
     this.note(
       overlayParts.length
         ? `${overlayParts.join(" + ")}: изменились ${changed} из ${done} тикеров.`
@@ -493,6 +539,9 @@ export class ScanController {
           sourceEndMs(candles, config.chartTf)
         );
         await this.saveCache(config.exchange, symbol, rsiTf, sourceCandles);
+      }
+      if (!sourceCandles?.length) {
+        throw new Error("нет свечей RSI ТФ");
       }
     }
     return { candles, sourceCandles };
@@ -807,6 +856,15 @@ export class ScanController {
           });
           continue;
         }
+        if (!rsiHistoryComplete(config.chartTf, config.rsiTf, history)) {
+          await saveRow({
+            symbol,
+            status: "error",
+            error: "нет свечей RSI ТФ",
+            updatedAt: nowIso()
+          });
+          continue;
+        }
 
         this.note(`${symbol}: подбор ${usedCombos.length} комбинаций…`);
         try {
@@ -967,12 +1025,7 @@ export class ScanController {
         row.error || row.note || ""
       ];
       lines.push(
-        cells
-          .map((cell) => {
-            const s = String(cell);
-            return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
-          })
-          .join(",")
+        cells.map(csvEscape).join(",")
       );
     }
     return lines.join("\n") + "\n";

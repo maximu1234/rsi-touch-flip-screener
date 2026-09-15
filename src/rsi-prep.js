@@ -29,13 +29,28 @@ export function sourceEndMs(chartCandles, chartTf) {
   return (last + chartSec) * 1000;
 }
 
+export function rsiSourceRequired(chartTf, rsiTf) {
+  return Boolean(rsiTf) && rsiTf !== chartTf;
+}
+
+export function rsiHistoryComplete(chartTf, rsiTf, history) {
+  if (!history?.candles?.length) {
+    return false;
+  }
+  if (rsiSourceRequired(chartTf, rsiTf) && !history.sourceCandles?.length) {
+    return false;
+  }
+  return true;
+}
+
 export function buildRsiForLen(chartCandles, sourceCandles, chartTf, rsiTf, rsiLen) {
-  const same =
-    !rsiTf ||
-    rsiTf === chartTf ||
-    !Array.isArray(sourceCandles) ||
-    !sourceCandles.length;
-  if (same) {
+  if (
+    rsiSourceRequired(chartTf, rsiTf) &&
+    (!Array.isArray(sourceCandles) || !sourceCandles.length)
+  ) {
+    throw new Error("нет свечей RSI ТФ");
+  }
+  if (!rsiTf || rsiTf === chartTf) {
     return computeWilderRsiValues(chartCandles, rsiLen);
   }
   const sourceRsi = computeWilderRsiValues(sourceCandles, rsiLen);

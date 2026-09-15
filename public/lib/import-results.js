@@ -1,4 +1,5 @@
-import { configFingerprint, normalizeConfig } from "./screener-defaults.js";
+import { configFingerprint, normalizeConfig, sanitizeScreenerSymbol } from "./screener-defaults.js";
+import { rsiTouchFlipTestVerdict } from "./rsi-touch-flip-walkforward.js";
 
 function nowIso() {
   return new Date().toISOString();
@@ -53,17 +54,44 @@ function parseCsvText(text) {
     const cells = parseCsvLine(line);
     const rec = {};
     for (let i = 0; i < header.length; i += 1) {
-      rec[header[i]] = cells[i] ?? "";
+      const key = header[i];
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
+        continue;
+      }
+      rec[key] = cells[i] ?? "";
     }
     return rec;
   });
 }
 
+function verdictFromImportedBest(best) {
+  const test = best?.test && typeof best.test === "object" ? best.test : {};
+  const net = Number(test.netProfit);
+  if (!Number.isFinite(net)) {
+    return {
+      ok: false,
+      reasons: ["импорт: нет данных Test"]
+    };
+  }
+  const closed = Number(test.closedTrades);
+  const pfRaw = test.profitFactor;
+  const pf =
+    pfRaw === Infinity || pfRaw === "Infinity"
+      ? Infinity
+      : Number.isFinite(Number(pfRaw))
+        ? Number(pfRaw)
+        : net > 0
+          ? Infinity
+          : 0;
+  return rsiTouchFlipTestVerdict({
+    closedTrades: Number.isFinite(closed) ? closed : 8,
+    netProfit: net,
+    profitFactor: pf
+  });
+}
+
 function rowFromCsvRecord(rec) {
-  const symbol = String(rec.symbol || "")
-    .replace(/\.P$/i, "")
-    .trim()
-    .toUpperCase();
+  const symbol = sanitizeScreenerSymbol(rec.symbol);
   if (!symbol) {
     return null;
   }
@@ -116,33 +144,24 @@ function rowFromCsvRecord(rec) {
     maxStack: num(rec.maxStack)
   };
 
-  const ok =
-    rec.ok === "yes" ? true : rec.ok === "no" ? false : undefined;
-  const reasons = String(rec.reasons || "")
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean);
-
   const trainNet = num(rec.trainNet);
   const testNet = num(rec.testNet);
   const testTrades = num(rec.testTrades);
+  const best = {
+    combo,
+    overview,
+    train: trainNet !== undefined ? { netProfit: trainNet } : undefined,
+    test: {
+      ...(testNet !== undefined ? { netProfit: testNet } : {}),
+      ...(testTrades !== undefined ? { closedTrades: testTrades } : {})
+    }
+  };
+  best.verdict = verdictFromImportedBest(best);
 
   return {
     symbol,
     status: "done",
-    best: {
-      combo,
-      overview,
-      train: trainNet !== undefined ? { netProfit: trainNet } : undefined,
-      test: {
-        ...(testNet !== undefined ? { netProfit: testNet } : {}),
-        ...(testTrades !== undefined ? { closedTrades: testTrades } : {})
-      },
-      verdict: {
-        ok,
-        reasons
-      }
-    },
+    best,
     updatedAt: nowIso()
   };
 }
@@ -172,11 +191,11 @@ export function normalizeImportPayload(raw) {
   if (Array.isArray(rows)) {
     rows = Object.fromEntries(
       rows
-        .filter((row) => row?.symbol)
-        .map((row) => [
-          String(row.symbol).replace(/\.P$/i, "").trim().toUpperCase(),
-          row
-        ])
+        .map((row) => {
+          const symbol = sanitizeScreenerSymbol(row?.symbol);
+          return symbol ? [symbol, row] : null;
+        })
+        .filter(Boolean)
     );
   } else if (!rows || typeof rows !== "object") {
     throw new Error("В файле нет таблицы rows");
@@ -184,14 +203,30 @@ export function normalizeImportPayload(raw) {
 
   const normalizedRows = {};
   for (const [key, row] of Object.entries(rows)) {
-    const symbol = String(row?.symbol || key)
-      .replace(/\.P$/i, "")
-      .trim()
-      .toUpperCase();
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      continue;
+    }
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+    const symbol = sanitizeScreenerSymbol(row.symbol || key);
     if (!symbol) {
       continue;
     }
-    normalizedRows[symbol] = { ...row, symbol };
+    const next = { ...row, symbol };
+    if (next.error != null) {
+      next.error = String(next.error);
+    }
+    if (next.note != null) {
+      next.note = String(next.note);
+    }
+    if (next.best && typeof next.best === "object") {
+      next.best = {
+        ...next.best,
+        verdict: verdictFromImportedBest(next.best)
+      };
+    }
+    normalizedRows[symbol] = next;
   }
 
   if (!Object.keys(normalizedRows).length) {

@@ -284,19 +284,13 @@ export function evaluateRsiTouchFlipCombo(opts = {}) {
   if (!split) {
     return null;
   }
-  const train = compactRsiTouchFlipOverview(
-    runWindow(split.train, prefs, rsiValues)
-  );
-  const test = compactRsiTouchFlipOverview(
-    runWindow(split.test, prefs, rsiValues)
-  );
-  const overview = compactRsiTouchFlipOverview(
-    runFullChart(
-      candles,
-      prefs,
-      rsiValues,
-      (Number(split.train.days) || 0) + (Number(split.test.days) || 0)
-    )
+  const trainRaw = runWindow(split.train, prefs, rsiValues);
+  const testRaw = runWindow(split.test, prefs, rsiValues);
+  const overviewRaw = runFullChart(
+    candles,
+    prefs,
+    rsiValues,
+    (Number(split.train.days) || 0) + (Number(split.test.days) || 0)
   );
   return {
     prefs: {
@@ -309,10 +303,10 @@ export function evaluateRsiTouchFlipCombo(opts = {}) {
       cycleSlEnabled: prefs.cycleSlEnabled === true,
       cycleSlPct: prefs.cycleSlPct
     },
-    overview,
-    train,
-    test,
-    verdict: rsiTouchFlipTestVerdict(test, {
+    overview: compactRsiTouchFlipOverview(overviewRaw),
+    train: compactRsiTouchFlipOverview(trainRaw),
+    test: compactRsiTouchFlipOverview(testRaw),
+    verdict: rsiTouchFlipTestVerdict(testRaw, {
       minTrades: rsiTouchFlipMinTestTrades(split.test.bars)
     })
   };
