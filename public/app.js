@@ -9,8 +9,9 @@ import {
   startClientScan,
   applyClientCycleSl,
   hasUnfinishedRows
-} from "./client/scan-client.js?v=9";
+} from "./client/scan-client.js?v=10";
 import { parseImportFile } from "./lib/import-results.js";
+import { formatRsiTouchFlipOverviewBestNote } from "./lib/rsi-touch-flip-walkforward.js";
 import {
   rsiTouchFlipSuitabilityDetail,
   rsiTouchFlipSuitabilityScore,
@@ -208,9 +209,16 @@ function renderTable() {
         return `<tr class="${kind}"><td>${row.symbol}</td><td class="muted">${label}</td>${emptyCells(21)}</tr>`;
       }
       const ok = row.best?.verdict?.ok;
+      const overviewNote = formatRsiTouchFlipOverviewBestNote(row.best?.overviewBest);
+      const okTip = escapeAttr(
+        overviewNote ||
+          (ok
+            ? "Лучшая чистая Обзора среди наборов с зелёным Test"
+            : "В сетке нет набора с зелёным Test; показан максимум Обзора")
+      );
       return `<tr>
         <td>${row.symbol}</td>
-        <td class="${ok ? "ok" : "no"}">${ok ? "можно" : "нельзя"}</td>
+        <td class="${ok ? "ok" : "no"}" title="${okTip}">${ok ? "можно" : "нельзя"}</td>
         <td>${c.rsiLen}</td>
         <td>${c.osLevel}</td>
         <td>${c.obLevel}</td>

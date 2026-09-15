@@ -872,9 +872,12 @@ export async function startClientScan(rawConfig, onState, onProgress) {
           const best = paintWorkerBest(result.best, history);
           const verdict = best?.verdict?.ok ? "можно" : "нельзя";
           const shownNet = best?.overview?.netProfit ?? net;
+          const overviewNote = best?.overviewBest?.combo
+            ? `; макс. Обзор RSI ${best.overviewBest.combo.rsiLen} OS ${best.overviewBest.combo.osLevel} OB ${best.overviewBest.combo.obLevel} стек ${best.overviewBest.combo.maxStack} — Test красный`
+            : "";
           note(
             best
-              ? `${symbol}: ${verdict}, чистая ${Number(shownNet).toFixed(2)}`
+              ? `${symbol}: ${verdict}, чистая ${Number(shownNet).toFixed(2)}${overviewNote}`
               : `${symbol}: набор не найден`
           );
           await saveRow({

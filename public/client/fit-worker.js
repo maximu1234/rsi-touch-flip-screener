@@ -2,7 +2,9 @@ import { runRsiTouchFlip } from "../lib/rsi-touch-flip-engine.js";
 import { normalizeRsiTouchFlipPrefs } from "../lib/rsi-touch-flip-prefs.js";
 import {
   listRsiTouchFlipOptimizeCombos,
-  optimizeRsiTouchFlipParams
+  optimizeRsiTouchFlipParams,
+  packRsiTouchFlipScreenerBest,
+  pickRsiTouchFlipTradeRow
 } from "../lib/rsi-touch-flip-optimize.js";
 import { buildRsiByLen } from "./rsi-prep.js";
 
@@ -91,18 +93,19 @@ self.onmessage = async (ev) => {
       }
     });
 
-    let overview = compact(result.best?.overview);
-    if (result.best?.combo && !result.cancelled) {
+    const { pick } = pickRsiTouchFlipTradeRow(result);
+    let overview = compact(pick?.overview);
+    if (pick?.combo && !result.cancelled) {
       const prefs = normalizeRsiTouchFlipPrefs({
         ...basePrefs,
-        ...result.best.combo
+        ...pick.combo
       });
-      const rsiFull = rsiByLen.get(result.best.combo.rsiLen);
+      const rsiFull = rsiByLen.get(pick.combo.rsiLen);
       if (Array.isArray(rsiFull)) {
         const full = runRsiTouchFlip(candles, prefs, { rsiValues: rsiFull });
         overview = compact({
           ...full.overview,
-          chartDays: result.best.overview?.chartDays
+          chartDays: pick.overview?.chartDays
         });
       }
     }
@@ -111,25 +114,7 @@ self.onmessage = async (ev) => {
       type: "done",
       symbol,
       cancelled: result.cancelled === true,
-      best: result.best
-        ? {
-            combo: result.best.combo,
-            prefs: {
-              rsiLen: result.best.prefs.rsiLen,
-              osLevel: result.best.prefs.osLevel,
-              obLevel: result.best.prefs.obLevel,
-              maxStack: result.best.prefs.maxStack,
-              rsiTf: result.best.prefs.rsiTf,
-              tradeSide: result.best.prefs.tradeSide,
-              cycleSlEnabled: result.best.prefs.cycleSlEnabled,
-              cycleSlPct: result.best.prefs.cycleSlPct
-            },
-            overview,
-            train: compact(result.best.train),
-            test: compact(result.best.test),
-            verdict: result.best.verdict
-          }
-        : null,
+      best: packRsiTouchFlipScreenerBest(result, overview),
       split: result.split
         ? {
             trainDays: result.split.train.days,
