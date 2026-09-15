@@ -157,6 +157,7 @@ export class ScanController {
     this.cancel = { cancelled: false };
     this.workers = [];
     this.overlayGen = 0;
+    this.runId = 0;
   }
 
   on(fn) {
@@ -549,6 +550,8 @@ export class ScanController {
     if (this.running) {
       throw new Error("Подбор уже идёт");
     }
+    const myId = ++this.runId;
+    const stillThisRun = () => myId === this.runId;
     const config = normalizeConfig(rawConfig);
     const prevConfig = this.config;
     const prevRows = this.rows;
@@ -588,7 +591,10 @@ export class ScanController {
     this.note(resuming ? "Продолжение подбора…" : "Старт подбора…");
 
     try {
-      await this.runScan(config, { resuming, prevConfig, prevRows });
+      await this.runScan(config, { resuming, prevConfig, prevRows, myId });
+      if (!stillThisRun()) {
+        return;
+      }
       if (this.paused) {
         this.progress.phase = "paused";
         this.note("На паузе. Когда будете на месте — нажмите Продолжить.");
@@ -600,11 +606,17 @@ export class ScanController {
         this.note("Готово.");
       }
     } catch (err) {
+      if (!stillThisRun()) {
+        return;
+      }
       this.error = err?.message || String(err);
       this.progress.phase = "error";
       this.note(`Ошибка: ${this.error}`);
       throw err;
     } finally {
+      if (!stillThisRun()) {
+        return;
+      }
       this.running = false;
       this.stoppedAt = nowIso();
       this.killWorkers();
@@ -634,6 +646,33 @@ export class ScanController {
     this.pause();
   }
 
+  async reset() {
+    this.runId += 1;
+    this.cancel = { cancelled: true };
+    this.paused = false;
+    this.running = false;
+    this.error = "";
+    this.killWorkers();
+    this.rows = {};
+    this.log = [];
+    this.fingerprint = "";
+    this.startedAt = null;
+    this.stoppedAt = null;
+    this.progress = {
+      phase: "idle",
+      done: 0,
+      total: 0,
+      currentSymbol: "",
+      comboDone: 0,
+      comboTotal: 0
+    };
+    this.overlayGen += 1;
+    this.note("Таблица и подбор сброшены.");
+    await this.persist();
+    this.emit();
+    return this.getState();
+  }
+
   async runScan(config, resume = {}) {
     let symbols = pickScanSymbols(
       config,
@@ -659,6 +698,9 @@ export class ScanController {
         );
         symbols = fallback;
       }
+    }
+    if (resume.myId != null && resume.myId !== this.runId) {
+      return;
     }
     if (config.force) {
       this.rows = {};
@@ -688,6 +730,9 @@ export class ScanController {
         (this.progress.done ? `, уже есть: ${this.progress.done}` : "") +
         `. Сетка: ${comboCount} комбинаций.`
     );
+    if (resume.myId != null && resume.myId !== this.runId) {
+      return;
+    }
     await this.persist();
     if (!pending.length) {
       return;
@@ -703,6 +748,9 @@ export class ScanController {
     const workers = Array.from({ length: workerCount }, () => this.spawnWorker());
 
     const saveRow = async (row) => {
+      if (resume.myId != null && resume.myId !== this.runId) {
+        return;
+      }
       this.rows[row.symbol] = row;
       this.progress.done = symbols.filter((s) => isRowFinished(this.rows[s])).length;
       await this.persist();
@@ -710,7 +758,10 @@ export class ScanController {
     };
 
     const runWorkerLoop = async (worker) => {
-      while (!this.cancel.cancelled) {
+      while (
+        !this.cancel.cancelled &&
+        (resume.myId == null || resume.myId === this.runId)
+      ) {
         const symbol = queue.shift();
         if (!symbol) {
           return;

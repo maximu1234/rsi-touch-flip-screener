@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RSI Touch Flip Screener</title>
-  <link rel="stylesheet" href="./style.css?v=4" />
+  <link rel="stylesheet" href="./style.css?v=5" />
 </head>
 <body>
   <header class="top">
     <div>
       <h1>RSI Touch Flip Screener</h1>
-      <p class="sub">Откройте ссылку в браузере и нажмите Старт — подбор идёт на этом компьютере, терминал не нужен. Перед переездом нажмите Пауза, на новом месте — Продолжить. Результаты можно сохранить в CSV/JSON или загрузить файл от друга.</p>
+      <p class="sub">Откройте ссылку в браузере и нажмите Старт — подбор идёт на этом компьютере, терминал не нужен. Перед переездом нажмите Пауза, на новом месте — Продолжить. Зависший или старый прогон — Сбросить. Результаты можно сохранить в CSV/JSON или загрузить файл от друга.</p>
     </div>
     <div class="top-actions">
       <button type="button" class="btn ghost" id="btn-saved">Прошлый результат</button>
@@ -20,6 +20,7 @@
       <a class="btn ghost" id="btn-json" href="./api/export.json">Сохранить JSON</a>
       <button type="button" class="btn" id="btn-start">Старт</button>
       <button type="button" class="btn pause" id="btn-pause" disabled>Пауза</button>
+      <button type="button" class="btn danger" id="btn-reset" title="Остановить зависший подбор и очистить таблицу">Сбросить</button>
     </div>
   </header>
 
@@ -133,6 +134,6 @@
     <pre id="log"></pre>
   </details>
 
-  <script type="module" src="./app.js?v=8"></script>
+  <script type="module" src="./app.js?v=10"></script>
 </body>
 </html>

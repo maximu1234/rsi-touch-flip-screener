@@ -65,3 +65,13 @@ export async function loadSavedResults() {
 export async function saveSavedResults(payload) {
   await idbSet("results", "current", payload);
 }
+
+export async function clearSavedResults() {
+  const db = await openDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction("results", "readwrite");
+    tx.objectStore("results").delete("current");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}

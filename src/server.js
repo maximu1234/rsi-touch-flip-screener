@@ -191,6 +191,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { ok: true });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/reset") {
+      await controller.reset();
+      sendJson(res, 200, controller.getState());
+      return;
+    }
     if (req.method === "GET") {
       await serveStatic(req, res);
       return;

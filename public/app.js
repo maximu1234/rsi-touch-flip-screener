@@ -5,10 +5,11 @@ import {
   importClientSnapshot,
   loadClientState,
   pauseClientScan,
+  resetClientScan,
   startClientScan,
   applyClientCycleSl,
   hasUnfinishedRows
-} from "./client/scan-client.js?v=8";
+} from "./client/scan-client.js?v=9";
 import { parseImportFile } from "./lib/import-results.js";
 import {
   rsiTouchFlipSuitabilityDetail,
@@ -26,18 +27,35 @@ const logEl = document.getElementById("log");
 const filterEl = document.getElementById("filter");
 const btnStart = document.getElementById("btn-start");
 const btnPause = document.getElementById("btn-pause");
+const btnReset = document.getElementById("btn-reset");
 const btnSaved = document.getElementById("btn-saved");
 const btnImport = document.getElementById("btn-import");
 const importFile = document.getElementById("import-file");
 
 const LOCAL_KEY = "rsi-touch-flip-screener-last-v1";
 
+function isStaticPagesHost() {
+  const host = String(location.hostname || "");
+  return (
+    location.protocol === "file:" ||
+    host.endsWith("github.io") ||
+    host.endsWith("pages.dev")
+  );
+}
+
 async function detectBackend() {
-  if (new URLSearchParams(location.search).get("browser") === "1") {
+  const query = new URLSearchParams(location.search);
+  if (query.get("browser") === "1") {
+    return false;
+  }
+  if (query.get("server") !== "1" && isStaticPagesHost()) {
     return false;
   }
   try {
-    const res = await fetch("./api/state", { cache: "no-store" });
+    const res = await fetch("./api/state", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(1500)
+    });
     if (!res.ok) {
       return false;
     }
@@ -292,6 +310,7 @@ function readLocal() {
 
 function saveLocal(snap) {
   if (!snap?.rows?.length) {
+    clearLocal();
     return;
   }
   try {
@@ -316,6 +335,14 @@ function saveLocal(snap) {
   }
 }
 
+function clearLocal() {
+  try {
+    localStorage.removeItem(LOCAL_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 function applyState(next, opts = {}) {
   state = next || state;
   if (!useBackend && state.rows?.length && !state.running) {
@@ -334,6 +361,8 @@ function applyState(next, opts = {}) {
   }
   if (state.rows?.length) {
     saveLocal(state);
+  } else {
+    clearLocal();
   }
 }
 
@@ -435,6 +464,34 @@ function pauseScan() {
 }
 
 btnPause.addEventListener("click", pauseScan);
+
+async function resetScan() {
+  lastRowStamp = "";
+  if (!useBackend) {
+    try {
+      const snap = await resetClientScan();
+      applyState(snap, { force: true });
+    } catch (err) {
+      statusLine.textContent = err?.message || "Не удалось сбросить";
+    }
+    return;
+  }
+  try {
+    const res = await fetch("./api/reset", { method: "POST" });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      statusLine.textContent = json.error || "Не удалось сбросить";
+      return;
+    }
+    applyState(json, { force: true });
+  } catch (err) {
+    statusLine.textContent = err?.message || "Не удалось сбросить";
+  }
+}
+
+btnReset.addEventListener("click", () => {
+  void resetScan();
+});
 
 window.addEventListener("pagehide", () => {
   if (!useBackend && state.running) {

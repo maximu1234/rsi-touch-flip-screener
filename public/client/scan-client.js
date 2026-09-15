@@ -15,6 +15,7 @@ import {
 } from "./defaults.js";
 import { downloadText, exportBasename, rowsToCsv } from "./export.js";
 import {
+  clearSavedResults,
   loadCachedKlines,
   loadSavedResults,
   saveCachedKlines,
@@ -98,6 +99,7 @@ const session = {
   running: false,
   paused: false,
   cancel: false,
+  runId: 0,
   workers: [],
   rows: {},
   config: normalizeConfig({}),
@@ -127,6 +129,17 @@ function queuedIncompleteRows() {
       row.status = "queued";
     }
   }
+}
+
+function idleProgress() {
+  return {
+    phase: "idle",
+    done: 0,
+    total: 0,
+    currentSymbol: "",
+    comboDone: 0,
+    comboTotal: 0
+  };
 }
 
 function publicState() {
@@ -162,6 +175,7 @@ function note(message) {
 }
 
 async function persist() {
+  const id = session.runId;
   await saveSavedResults({
     fingerprint: session.fingerprint,
     config: session.config,
@@ -174,6 +188,13 @@ async function persist() {
     log: session.log.slice(-80),
     progress: { ...session.progress }
   });
+  if (id !== session.runId) {
+    try {
+      await clearSavedResults();
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 async function loadCachedHistory(config, symbol) {
@@ -553,6 +574,36 @@ export function stopClientScan() {
   haltClientScan("stop");
 }
 
+function wipeSessionMemory() {
+  session.cancel = true;
+  session.paused = false;
+  session.running = false;
+  session.error = "";
+  session.rows = {};
+  session.log = [];
+  session.fingerprint = "";
+  session.startedAt = null;
+  session.stoppedAt = null;
+  session.progress = idleProgress();
+  session.overlayGen += 1;
+  killWorkers();
+}
+
+/** Stop workers, drop the table, and forget the saved run. */
+export async function resetClientScan(onState) {
+  session.runId += 1;
+  wipeSessionMemory();
+  note("Таблица и подбор сброшены.");
+  try {
+    await clearSavedResults();
+  } catch {
+    /* ignore */
+  }
+  const snap = publicState();
+  onState?.(snap);
+  return snap;
+}
+
 export function exportClientCsv() {
   const snap = publicState();
   downloadText(
@@ -604,7 +655,12 @@ export async function startClientScan(rawConfig, onState, onProgress) {
   if (session.running) {
     throw new Error("Подбор уже идёт");
   }
+  const myId = ++session.runId;
+  const stillThisRun = () => myId === session.runId;
   const emit = (kind = "state") => {
+    if (!stillThisRun()) {
+      return;
+    }
     const snap = publicState();
     if (kind === "progress") {
       onProgress?.(snap);
@@ -673,6 +729,9 @@ export async function startClientScan(rawConfig, onState, onProgress) {
         symbols = fallback;
       }
     }
+    if (!stillThisRun()) {
+      return;
+    }
     if (config.force) {
       session.rows = {};
     }
@@ -721,6 +780,9 @@ export async function startClientScan(rawConfig, onState, onProgress) {
     );
 
     const saveRow = async (row) => {
+      if (!stillThisRun()) {
+        return;
+      }
       session.rows[row.symbol] = row;
       session.progress.done = symbols.filter((s) =>
         isRowFinished(session.rows[s])
@@ -730,7 +792,7 @@ export async function startClientScan(rawConfig, onState, onProgress) {
     };
 
     const runWorkerLoop = async (worker) => {
-      while (!session.cancel) {
+      while (stillThisRun() && !session.cancel) {
         const symbol = queue.shift();
         if (!symbol) {
           return;
@@ -840,6 +902,9 @@ export async function startClientScan(rawConfig, onState, onProgress) {
     };
 
     await Promise.all(session.workers.map((worker) => runWorkerLoop(worker)));
+    if (!stillThisRun()) {
+      return;
+    }
     if (session.paused) {
       queuedIncompleteRows();
       session.progress.phase = "paused";
@@ -853,11 +918,17 @@ export async function startClientScan(rawConfig, onState, onProgress) {
       note("Готово.");
     }
   } catch (err) {
+    if (!stillThisRun()) {
+      return;
+    }
     session.error = err?.message || String(err);
     session.progress.phase = "error";
     note(`Ошибка: ${session.error}`);
     throw err;
   } finally {
+    if (!stillThisRun()) {
+      return;
+    }
     session.running = false;
     session.stoppedAt = nowIso();
     killWorkers();
