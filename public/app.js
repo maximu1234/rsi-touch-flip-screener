@@ -7,9 +7,10 @@ import {
   pauseClientScan,
   resetClientScan,
   startClientScan,
+  refreshClientSymbol,
   applyClientCycleSl,
   hasUnfinishedRows
-} from "./client/scan-client.js?v=11";
+} from "./client/scan-client.js?v=12";
 import { parseImportFile } from "./lib/import-results.js";
 import { escapeHtml } from "./lib/screener-defaults.js";
 import { formatRsiTouchFlipOverviewBestNote } from "./lib/rsi-touch-flip-walkforward.js";
@@ -116,6 +117,11 @@ function escapeAttr(value) {
   return escapeHtml(value);
 }
 
+function refreshCell(row) {
+  const disabled = row.status === "running" ? " disabled" : "";
+  return `<td class="refresh-cell"><button type="button" class="row-refresh" data-symbol="${escapeHtml(row.symbol)}" title="Пересчитать только этот тикер"${disabled}>Обновить</button></td>`;
+}
+
 function suitabilityCell(row) {
   const { score, reasons } = rsiTouchFlipSuitabilityDetail(row);
   if (score == null) {
@@ -193,7 +199,7 @@ function renderTable() {
   tbody.innerHTML = rows
     .map((row) => {
       if (row.error) {
-        return `<tr class="is-error"><td>${escapeHtml(row.symbol)}</td><td class="no">ошибка</td><td colspan="21">${escapeHtml(row.error)}</td></tr>`;
+        return `<tr class="is-error"><td>${escapeHtml(row.symbol)}</td><td class="no">ошибка</td><td colspan="21">${escapeHtml(row.error)}</td>${refreshCell(row)}</tr>`;
       }
       const o = row.best?.overview;
       const c = row.best?.combo;
@@ -210,7 +216,7 @@ function renderTable() {
             : row.status === "queued"
               ? "is-wait"
               : "";
-        return `<tr class="${kind}"><td>${escapeHtml(row.symbol)}</td><td class="muted">${escapeHtml(label)}</td>${emptyCells(21)}</tr>`;
+        return `<tr class="${kind}"><td>${escapeHtml(row.symbol)}</td><td class="muted">${escapeHtml(label)}</td>${emptyCells(21)}${refreshCell(row)}</tr>`;
       }
       const ok = row.best?.verdict?.ok;
       const overviewNote = formatRsiTouchFlipOverviewBestNote(row.best?.overviewBest);
@@ -250,6 +256,7 @@ function renderTable() {
         ${moneyCell(row.best?.train?.netProfit, row.best?.train?.netProfitPct)}
         ${moneyCell(row.best?.test?.netProfit, row.best?.test?.netProfitPct)}
         ${suitabilityCell(row)}
+        ${refreshCell(row)}
       </tr>`;
     })
     .join("");
@@ -443,6 +450,42 @@ function fillForm(config, opts = {}) {
     ? config.symbols.join(", ")
     : "";
   form.elements.comboLimit.value = "0";
+}
+
+tbody.addEventListener("click", (ev) => {
+  const btn = ev.target.closest?.(".row-refresh");
+  if (!btn || btn.disabled) {
+    return;
+  }
+  const symbol = btn.getAttribute("data-symbol");
+  if (!symbol) {
+    return;
+  }
+  void refreshRow(symbol);
+});
+
+async function refreshRow(symbol) {
+  if (!useBackend) {
+    try {
+      await refreshClientSymbol(
+        symbol,
+        (snap) => applyState(snap, { force: true }),
+        applyProgress
+      );
+    } catch (err) {
+      statusLine.textContent = err?.message || "Не удалось обновить строку";
+    }
+    return;
+  }
+  const res = await fetch("./api/refresh-symbol", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ symbol })
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    statusLine.textContent = json.error || "Не удалось обновить строку";
+  }
 }
 
 btnStart.addEventListener("click", async () => {

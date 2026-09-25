@@ -161,6 +161,7 @@ export class ScanController {
     };
     this.cancel = { cancelled: false };
     this.workers = [];
+    this.retryQueue = [];
     this.overlayGen = 0;
     this.runId = 0;
   }
@@ -595,6 +596,57 @@ export class ScanController {
     });
   }
 
+  async refreshSymbol(rawSymbol) {
+    const symbol = sanitizeScreenerSymbol(rawSymbol);
+    if (!symbol) {
+      throw new Error("Некорректный тикер");
+    }
+    if (!this.rows[symbol]) {
+      throw new Error("Строки нет в таблице");
+    }
+    if (this.rows[symbol].status === "running") {
+      return this.getState();
+    }
+    if (this.running) {
+      if (!this.retryQueue.includes(symbol)) {
+        this.retryQueue.push(symbol);
+      }
+      this.rows[symbol] = {
+        symbol,
+        status: "queued",
+        updatedAt: nowIso()
+      };
+      this.note(`${symbol}: обновление поставлено в очередь`);
+      this.emit("state");
+      return this.getState();
+    }
+
+    const savedConfig = this.config;
+    this.rows[symbol] = {
+      symbol,
+      status: "queued",
+      updatedAt: nowIso()
+    };
+    await this.start({
+      ...savedConfig,
+      symbols: [symbol],
+      force: false,
+      refreshCache: true
+    });
+    this.config = normalizeConfig({
+      ...this.config,
+      symbols: savedConfig.symbols,
+      refreshCache: false
+    });
+    this.fingerprint = configFingerprint(this.config);
+    this.progress.total = Object.keys(this.rows).length;
+    this.progress.done = Object.values(this.rows).filter(isRowFinished).length;
+    this.progress.phase = "saved";
+    await this.persist();
+    this.emit("state");
+    return this.getState();
+  }
+
   async start(rawConfig = {}) {
     if (this.running) {
       throw new Error("Подбор уже идёт");
@@ -616,6 +668,7 @@ export class ScanController {
     this.cancel = { cancelled: false };
     this.paused = false;
     this.running = true;
+    this.retryQueue = [];
     if (!resuming || !this.startedAt) {
       this.startedAt = nowIso();
     }
@@ -811,7 +864,7 @@ export class ScanController {
         !this.cancel.cancelled &&
         (resume.myId == null || resume.myId === this.runId)
       ) {
-        const symbol = queue.shift();
+        const symbol = queue.shift() || this.retryQueue.shift();
         if (!symbol) {
           return;
         }

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RSI Touch Flip Screener</title>
-  <link rel="stylesheet" href="./style.css?v=5" />
+  <link rel="stylesheet" href="./style.css?v=6" />
 </head>
 <body>
   <header class="top">
@@ -123,6 +123,7 @@
           <th data-sort="trainNet">Train</th>
           <th data-sort="testNet">Test</th>
           <th data-sort="suitability" title="Индекс пригодности 0–100: насколько строка подбора выглядит надёжной для live (только метрики этой строки)">ИП</th>
+          <th class="refresh-col" title="Пересчитать только этот тикер"></th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
@@ -134,6 +135,6 @@
     <pre id="log"></pre>
   </details>
 
-  <script type="module" src="./app.js?v=12"></script>
+  <script type="module" src="./app.js?v=13"></script>
 </body>
 </html>

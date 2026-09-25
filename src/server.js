@@ -171,6 +171,16 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, controller.getState());
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/refresh-symbol") {
+      const body = await readBody(req);
+      try {
+        const state = await controller.refreshSymbol(body?.symbol);
+        sendJson(res, 200, { ok: true, ...state });
+      } catch (err) {
+        sendJson(res, 400, { ok: false, error: err?.message || String(err) });
+      }
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/start") {
       const body = await readBody(req);
       if (controller.running) {

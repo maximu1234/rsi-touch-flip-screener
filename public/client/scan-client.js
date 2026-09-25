@@ -104,6 +104,8 @@ const session = {
   cancel: false,
   runId: 0,
   workers: [],
+  retryQueue: [],
+  emit: null,
   rows: {},
   config: normalizeConfig({}),
   fingerprint: "",
@@ -562,6 +564,128 @@ function runOnWorker(worker, payload, onProgress) {
   });
 }
 
+async function scanOneSymbol(worker, symbol, config, comboCount, ctx) {
+  const { limitFetch, stillThisRun, emit, saveRow } = ctx;
+  const basePrefs = gridPrefsFromConfig(config);
+  session.progress.currentSymbol = symbol;
+  session.progress.comboDone = 0;
+  session.progress.comboTotal = comboCount;
+  const prev = { ...(session.rows[symbol] || { symbol }) };
+  delete prev.error;
+  session.rows[symbol] = {
+    ...prev,
+    symbol,
+    status: "running",
+    updatedAt: nowIso()
+  };
+  emit("state");
+
+  let history;
+  try {
+    history = await limitFetch(() => loadHistory(config, symbol));
+  } catch (err) {
+    note(`${symbol}: ${err?.message || err}`);
+    await saveRow({
+      symbol,
+      status: "error",
+      error: err?.message || String(err),
+      updatedAt: nowIso()
+    });
+    return "next";
+  }
+  if (!stillThisRun() || session.cancel) {
+    session.rows[symbol] = {
+      symbol,
+      status: "queued",
+      updatedAt: nowIso()
+    };
+    return "stop-worker";
+  }
+  if (!history.candles?.length) {
+    await saveRow({
+      symbol,
+      status: "error",
+      error: "нет свечей",
+      updatedAt: nowIso()
+    });
+    return "next";
+  }
+  if (!rsiHistoryComplete(config.chartTf, config.rsiTf, history)) {
+    await saveRow({
+      symbol,
+      status: "error",
+      error: "нет свечей RSI ТФ",
+      updatedAt: nowIso()
+    });
+    return "next";
+  }
+
+  note(`${symbol}: подбор ${comboCount} комбинаций…`);
+  try {
+    const result = await runOnWorker(
+      worker,
+      {
+        symbol,
+        candles: history.candles,
+        sourceCandles: history.sourceCandles,
+        chartTf: config.chartTf,
+        rsiTf: config.rsiTf,
+        basePrefs,
+        trainPct: config.trainPct,
+        comboLimit: config.comboLimit
+      },
+      (p) => {
+        session.progress.currentSymbol = p.symbol;
+        session.progress.comboDone = p.done;
+        session.progress.comboTotal = p.total;
+        emit("progress");
+      }
+    );
+    if (result.cancelled || session.cancel || !stillThisRun()) {
+      session.rows[symbol] = {
+        symbol,
+        status: "queued",
+        updatedAt: nowIso()
+      };
+      note(`${symbol}: прервано, строка не сохранена.`);
+      return "stop-worker";
+    }
+    const net = result.best?.overview?.netProfit;
+    const best = paintWorkerBest(result.best, history);
+    const verdict = best?.verdict?.ok ? "можно" : "нельзя";
+    const shownNet = best?.overview?.netProfit ?? net;
+    const overviewNote = best?.overviewBest?.combo
+      ? `; макс. Обзор RSI ${best.overviewBest.combo.rsiLen} OS ${best.overviewBest.combo.osLevel} OB ${best.overviewBest.combo.obLevel} стек ${best.overviewBest.combo.maxStack} — Test красный`
+      : "";
+    note(
+      best
+        ? `${symbol}: ${verdict}, чистая ${Number(shownNet).toFixed(2)}${overviewNote}`
+        : `${symbol}: набор не найден`
+    );
+    await saveRow({
+      symbol,
+      status: "done",
+      candles: history.candles.length,
+      sourceCandles: history.sourceCandles?.length || 0,
+      best,
+      split: result.split,
+      tried: result.tried,
+      total: result.total,
+      note: best ? "" : "нет набора с ≥8 сделками на Train",
+      updatedAt: nowIso()
+    });
+  } catch (err) {
+    note(`${symbol}: ${err?.message || err}`);
+    await saveRow({
+      symbol,
+      status: "error",
+      error: err?.message || String(err),
+      updatedAt: nowIso()
+    });
+  }
+  return "next";
+}
+
 function killWorkers() {
   for (const worker of session.workers) {
     try {
@@ -693,6 +817,7 @@ export async function startClientScan(rawConfig, onState, onProgress) {
       onState?.(snap);
     }
   };
+  session.emit = emit;
 
   const config = normalizeConfig(rawConfig);
   if (config.exchange !== "bybit") {
@@ -709,6 +834,7 @@ export async function startClientScan(rawConfig, onState, onProgress) {
   session.cancel = false;
   session.paused = false;
   session.running = true;
+  session.retryQueue = [];
   if (!resuming || !session.startedAt) {
     session.startedAt = nowIso();
   }
@@ -795,7 +921,6 @@ export async function startClientScan(rawConfig, onState, onProgress) {
       return;
     }
 
-    const basePrefs = gridPrefsFromConfig(config);
     const queue = pending.slice();
     const limitFetch = createLimiter(config.fetchConcurrency);
     const workerCount = Math.min(config.workers, pending.length);
@@ -818,127 +943,44 @@ export async function startClientScan(rawConfig, onState, onProgress) {
 
     const runWorkerLoop = async (worker) => {
       while (stillThisRun() && !session.cancel) {
-        const symbol = queue.shift();
+        const symbol = nextScanSymbol(queue);
         if (!symbol) {
           return;
         }
-        session.progress.currentSymbol = symbol;
-        session.progress.comboDone = 0;
-        session.progress.comboTotal = comboCount;
-        session.rows[symbol] = {
-          ...(session.rows[symbol] || { symbol }),
-          status: "running",
-          updatedAt: nowIso()
-        };
-        emit("state");
-
-        let history;
-        try {
-          history = await limitFetch(() => loadHistory(config, symbol));
-        } catch (err) {
-          note(`${symbol}: ${err?.message || err}`);
-          await saveRow({
-            symbol,
-            status: "error",
-            error: err?.message || String(err),
-            updatedAt: nowIso()
-          });
-          continue;
-        }
-        if (session.cancel) {
-          session.rows[symbol] = {
-            symbol,
-            status: "queued",
-            updatedAt: nowIso()
-          };
+        const step = await scanOneSymbol(worker, symbol, config, comboCount, {
+          limitFetch,
+          stillThisRun,
+          emit,
+          saveRow
+        });
+        if (step === "stop-worker") {
           return;
-        }
-        if (!history.candles?.length) {
-          await saveRow({
-            symbol,
-            status: "error",
-            error: "нет свечей",
-            updatedAt: nowIso()
-          });
-          continue;
-        }
-        if (!rsiHistoryComplete(config.chartTf, config.rsiTf, history)) {
-          await saveRow({
-            symbol,
-            status: "error",
-            error: "нет свечей RSI ТФ",
-            updatedAt: nowIso()
-          });
-          continue;
-        }
-
-        note(`${symbol}: подбор ${comboCount} комбинаций…`);
-        try {
-          const result = await runOnWorker(
-            worker,
-            {
-              symbol,
-              candles: history.candles,
-              sourceCandles: history.sourceCandles,
-              chartTf: config.chartTf,
-              rsiTf: config.rsiTf,
-              basePrefs,
-              trainPct: config.trainPct,
-              comboLimit: config.comboLimit
-            },
-            (p) => {
-              session.progress.currentSymbol = p.symbol;
-              session.progress.comboDone = p.done;
-              session.progress.comboTotal = p.total;
-              emit("progress");
-            }
-          );
-          if (result.cancelled || session.cancel) {
-            session.rows[symbol] = {
-              symbol,
-              status: "queued",
-              updatedAt: nowIso()
-            };
-            note(`${symbol}: прервано, строка не сохранена.`);
-            return;
-          }
-          const net = result.best?.overview?.netProfit;
-          const best = paintWorkerBest(result.best, history);
-          const verdict = best?.verdict?.ok ? "можно" : "нельзя";
-          const shownNet = best?.overview?.netProfit ?? net;
-          const overviewNote = best?.overviewBest?.combo
-            ? `; макс. Обзор RSI ${best.overviewBest.combo.rsiLen} OS ${best.overviewBest.combo.osLevel} OB ${best.overviewBest.combo.obLevel} стек ${best.overviewBest.combo.maxStack} — Test красный`
-            : "";
-          note(
-            best
-              ? `${symbol}: ${verdict}, чистая ${Number(shownNet).toFixed(2)}${overviewNote}`
-              : `${symbol}: набор не найден`
-          );
-          await saveRow({
-            symbol,
-            status: "done",
-            candles: history.candles.length,
-            sourceCandles: history.sourceCandles?.length || 0,
-            best,
-            split: result.split,
-            tried: result.tried,
-            total: result.total,
-            note: best ? "" : "нет набора с ≥8 сделками на Train",
-            updatedAt: nowIso()
-          });
-        } catch (err) {
-          note(`${symbol}: ${err?.message || err}`);
-          await saveRow({
-            symbol,
-            status: "error",
-            error: err?.message || String(err),
-            updatedAt: nowIso()
-          });
         }
       }
     };
 
     await Promise.all(session.workers.map((worker) => runWorkerLoop(worker)));
+    const drainWorker = session.workers[0];
+    while (
+      drainWorker &&
+      stillThisRun() &&
+      !session.cancel &&
+      session.retryQueue.length
+    ) {
+      const symbol = session.retryQueue.shift();
+      if (!symbol) {
+        break;
+      }
+      const step = await scanOneSymbol(drainWorker, symbol, config, comboCount, {
+        limitFetch,
+        stillThisRun,
+        emit,
+        saveRow
+      });
+      if (step === "stop-worker") {
+        break;
+      }
+    }
     if (!stillThisRun()) {
       return;
     }
@@ -968,8 +1010,126 @@ export async function startClientScan(rawConfig, onState, onProgress) {
     }
     session.running = false;
     session.stoppedAt = nowIso();
+    if (session.emit === emit) {
+      session.emit = null;
+    }
     killWorkers();
     await persist();
     emit("state");
   }
+}
+
+function nextScanSymbol(queue) {
+  const queued = queue.shift();
+  if (queued) {
+    return queued;
+  }
+  return session.retryQueue.shift() || null;
+}
+
+export async function refreshClientSymbol(rawSymbol, onState, onProgress) {
+  const symbol = sanitizeScreenerSymbol(rawSymbol);
+  if (!symbol) {
+    throw new Error("Некорректный тикер");
+  }
+  if (!session.rows[symbol]) {
+    throw new Error("Строки нет в таблице");
+  }
+  if (session.rows[symbol].status === "running") {
+    return publicState();
+  }
+  if (session.running) {
+    if (!session.retryQueue.includes(symbol)) {
+      session.retryQueue.push(symbol);
+    }
+    session.rows[symbol] = {
+      symbol,
+      status: "queued",
+      updatedAt: nowIso()
+    };
+    note(`${symbol}: обновление поставлено в очередь`);
+    session.emit?.("state");
+    return publicState();
+  }
+
+  const myId = ++session.runId;
+  const stillThisRun = () => myId === session.runId;
+  const emit = (kind = "state") => {
+    if (!stillThisRun()) {
+      return;
+    }
+    const snap = publicState();
+    if (kind === "progress") {
+      onProgress?.(snap);
+    } else {
+      onState?.(snap);
+    }
+  };
+  session.emit = emit;
+  const config = normalizeConfig({
+    ...session.config,
+    refreshCache: true
+  });
+  session.config = { ...session.config, refreshCache: false };
+  session.error = "";
+  session.cancel = false;
+  session.paused = false;
+  session.running = true;
+  const comboCount =
+    config.comboLimit > 0
+      ? config.comboLimit
+      : listRsiTouchFlipOptimizeCombos().length;
+  session.progress = {
+    phase: "scan",
+    done: Object.values(session.rows).filter(isRowFinished).length,
+    total: Object.keys(session.rows).length,
+    currentSymbol: symbol,
+    comboDone: 0,
+    comboTotal: comboCount
+  };
+  note(`${symbol}: обновление строки…`);
+  emit();
+
+  const worker = new Worker(workerUrl(), { type: "module" });
+  session.workers = [worker];
+  const saveRow = async (row) => {
+    if (!stillThisRun()) {
+      return;
+    }
+    session.rows[row.symbol] = row;
+    session.progress.done = Object.values(session.rows).filter(isRowFinished).length;
+    session.progress.total = Object.keys(session.rows).length;
+    await persist();
+    emit("state");
+  };
+
+  try {
+    await scanOneSymbol(worker, symbol, config, comboCount, {
+      limitFetch: (fn) => fn(),
+      stillThisRun,
+      emit,
+      saveRow
+    });
+    if (stillThisRun()) {
+      session.progress.phase = "saved";
+      note(`${symbol}: строка обновлена`);
+    }
+  } catch (err) {
+    if (stillThisRun()) {
+      session.error = err?.message || String(err);
+      note(`Ошибка: ${session.error}`);
+    }
+  } finally {
+    if (stillThisRun()) {
+      session.running = false;
+      session.stoppedAt = nowIso();
+      if (session.emit === emit) {
+        session.emit = null;
+      }
+      killWorkers();
+      await persist();
+      emit("state");
+    }
+  }
+  return publicState();
 }
