@@ -1,5 +1,8 @@
 import { listRsiTouchFlipOptimizeCombos } from "../lib/rsi-touch-flip-optimize.js";
+import { runRsiTouchFlip } from "../lib/rsi-touch-flip-engine.js";
+import { normalizeRsiTouchFlipPrefs } from "../lib/rsi-touch-flip-prefs.js";
 import {
+  rememberBareBaseline,
   repaintFittedBest,
   snapshotFittedBest
 } from "../lib/rsi-touch-flip-overlay.js";
@@ -12,6 +15,7 @@ import {
   configFingerprint,
   gridPrefsFromConfig,
   normalizeConfig,
+  prefsFromConfig,
   sanitizeScreenerExchange,
   sanitizeScreenerSymbol,
   sanitizeScreenerTf
@@ -282,34 +286,44 @@ function paintWorkerBest(best, history) {
   const snapped = snapshotFittedBest(best);
   const cfg = session.config;
   const needsRepaint = cfg.cycleSlEnabled || cfg.compoundEnabled;
-  if (
-    !needsRepaint ||
-    !snapped?.combo ||
-    !rsiHistoryComplete(cfg.chartTf, cfg.rsiTf, history)
-  ) {
+  const canEval =
+    snapped?.combo && rsiHistoryComplete(cfg.chartTf, cfg.rsiTf, history);
+  if (!canEval || (!needsRepaint && cfg.compoundEnabled !== true)) {
     return snapped;
   }
+  let rsiValues;
   try {
-    const rsiValues = buildRsiForLen(
+    rsiValues = buildRsiForLen(
       history.candles,
       history.sourceCandles,
       cfg.chartTf,
       cfg.rsiTf,
       snapped.combo.rsiLen
     );
-    return repaintFittedBest(snapped, {
-      candles: history.candles,
-      rsiValues,
-      chartTf: cfg.chartTf,
-      trainPct: cfg.trainPct,
-      cycleSlEnabled: cfg.cycleSlEnabled === true,
-      cycleSlPct: cfg.cycleSlPct,
-      compoundEnabled: cfg.compoundEnabled === true,
-      basePrefs: gridPrefsFromConfig(cfg)
-    });
   } catch {
     return snapped;
   }
+  const sealed = rememberBareBaseline(snapped, {
+    compoundEnabled: cfg.compoundEnabled === true,
+    candles: history.candles,
+    rsiValues,
+    chartTf: cfg.chartTf,
+    trainPct: cfg.trainPct,
+    basePrefs: prefsFromConfig(cfg)
+  });
+  if (!needsRepaint) {
+    return sealed;
+  }
+  return repaintFittedBest(sealed, {
+    candles: history.candles,
+    rsiValues,
+    chartTf: cfg.chartTf,
+    trainPct: cfg.trainPct,
+    cycleSlEnabled: cfg.cycleSlEnabled === true,
+    cycleSlPct: cfg.cycleSlPct,
+    compoundEnabled: cfg.compoundEnabled === true,
+    basePrefs: gridPrefsFromConfig(cfg)
+  });
 }
 
 async function repaintRowBest(row, config, limitFetch) {
@@ -1025,6 +1039,39 @@ function nextScanSymbol(queue) {
     return queued;
   }
   return session.retryQueue.shift() || null;
+}
+
+export async function previewClientEquity(symbol, config, combo) {
+  const cfg = normalizeConfig(config);
+  const safe = sanitizeScreenerSymbol(symbol);
+  if (!safe || !combo) {
+    throw new Error("нет набора");
+  }
+  const history = await loadHistory(cfg, safe);
+  if (!rsiHistoryComplete(cfg.chartTf, cfg.rsiTf, history)) {
+    throw new Error("нет свечей");
+  }
+  const rsiValues = buildRsiForLen(
+    history.candles,
+    history.sourceCandles,
+    cfg.chartTf,
+    cfg.rsiTf,
+    combo.rsiLen
+  );
+  const prefs = normalizeRsiTouchFlipPrefs({
+    ...prefsFromConfig(cfg),
+    ...combo,
+    cycleSlEnabled: cfg.cycleSlEnabled === true,
+    cycleSlPct: cfg.cycleSlPct,
+    compoundEnabled: cfg.compoundEnabled === true
+  });
+  const result = runRsiTouchFlip(history.candles, prefs, { rsiValues });
+  return {
+    candles: history.candles,
+    closedTrades: Array.isArray(result.closedTrades) ? result.closedTrades : [],
+    overview: result.overview,
+    budget: prefs.budget
+  };
 }
 
 export async function refreshClientSymbol(rawSymbol, onState, onProgress) {

@@ -79,6 +79,45 @@ export function repaintFittedBest(best, opts = {}) {
   };
 }
 
+/**
+ * Набор выбран с Compound, а «голый» снимок нужен, чтобы выключение
+ * чекбокса вернуло те же цифры, что обычный прогон этого набора.
+ */
+export function rememberBareBaseline(best, opts = {}) {
+  const snapped = snapshotFittedBest(best);
+  if (!snapped?.combo || opts.compoundEnabled !== true) {
+    return snapped;
+  }
+  if (!opts.candles?.length || !opts.rsiValues) {
+    return snapped;
+  }
+  const scored = evaluateRsiTouchFlipCombo({
+    candles: opts.candles,
+    rsiValues: opts.rsiValues,
+    chartTf: opts.chartTf,
+    trainPct: opts.trainPct,
+    prefs: {
+      ...(opts.basePrefs || {}),
+      ...snapped.combo,
+      cycleSlEnabled: false,
+      compoundEnabled: false
+    }
+  });
+  if (!scored) {
+    return snapped;
+  }
+  return {
+    ...snapped,
+    fitted: {
+      overview: scored.overview,
+      train: scored.train,
+      test: scored.test,
+      verdict: scored.verdict,
+      prefs: scored.prefs
+    }
+  };
+}
+
 /** @deprecated use repaintFittedBest */
 export function paintBestWithCycleSl(best, opts = {}) {
   return repaintFittedBest(best, opts);

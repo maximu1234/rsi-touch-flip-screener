@@ -8,9 +8,10 @@ import {
   resetClientScan,
   startClientScan,
   refreshClientSymbol,
+  previewClientEquity,
   applyClientCycleSl,
   hasUnfinishedRows
-} from "./client/scan-client.js?v=12";
+} from "./client/scan-client.js?v=13";
 import { parseImportFile } from "./lib/import-results.js";
 import { escapeHtml } from "./lib/screener-defaults.js";
 import { formatRsiTouchFlipOverviewBestNote } from "./lib/rsi-touch-flip-walkforward.js";
@@ -75,6 +76,7 @@ let state = { rows: [], progress: {}, running: false };
 let sortKey = "netProfit";
 let sortDir = "desc";
 let lastRowStamp = "";
+let equityView = null;
 
 function num(value) {
   if (value === Infinity || value === "Infinity") {
@@ -107,6 +109,114 @@ function cls(value) {
 
 function moneyCell(value, pct) {
   return `<td class="${cls(value)}">${fmt(value)}${fmtPct(pct)}</td>`;
+}
+
+function equityDetail(row) {
+  if (!equityView || equityView.symbol !== row.symbol) {
+    return "";
+  }
+  if (equityView.phase === "loading") {
+    return `<tr class="equity-row"><td colspan="24">Считаю доходность…</td></tr>`;
+  }
+  if (equityView.phase === "error") {
+    return `<tr class="equity-row"><td colspan="24">${escapeHtml(equityView.error || "Не удалось построить график")}</td></tr>`;
+  }
+  const shown = num(equityView.net);
+  const tableNet = num(equityView.tableNet);
+  const differs =
+    shown != null &&
+    tableNet != null &&
+    Math.abs(shown - tableNet) > 0.05;
+  const note = differs
+    ? `Прогон ${fmt(shown)} USDT, в таблице ${fmt(tableNet)}`
+    : `${fmt(shown)} USDT`;
+  return `<tr class="equity-row"><td colspan="24"><div class="equity-panel"><div class="equity-cap">Доходность · ${escapeHtml(note)} · закрытые сделки, доллары</div><canvas id="equity-canvas"></canvas></div></td></tr>`;
+}
+
+function paintEquityCanvas() {
+  const canvas = document.getElementById("equity-canvas");
+  if (!canvas || equityView?.phase !== "ready" || !equityView.series) {
+    return;
+  }
+  import("./client/equity-chart.js").then((mod) => {
+    if (equityView?.phase === "ready" && document.getElementById("equity-canvas") === canvas) {
+      mod.drawEquityChart(canvas, equityView.series);
+    }
+  }).catch(() => {});
+}
+
+function equityKey(symbol) {
+  const body = readForm();
+  const row = (state.rows || []).find((item) => item.symbol === symbol);
+  const combo = row?.best?.combo || {};
+  return [
+    symbol,
+    combo.rsiLen,
+    combo.osLevel,
+    combo.obLevel,
+    combo.maxStack,
+    body.budget,
+    body.commissionPct,
+    body.sizeMode,
+    body.sizeMult,
+    body.tradeSide,
+    body.chartTf,
+    body.rsiTf,
+    body.trainPct,
+    body.compoundEnabled ? 1 : 0,
+    body.cycleSlEnabled ? 1 : 0,
+    body.cycleSlPct
+  ].join("|");
+}
+
+async function openEquity(symbol) {
+  const row = (state.rows || []).find((item) => item.symbol === symbol);
+  const combo = row?.best?.combo;
+  if (!combo) {
+    return;
+  }
+  const key = equityKey(symbol);
+  if (equityView?.symbol === symbol && equityView.key === key) {
+    equityView = null;
+    renderTable();
+    return;
+  }
+  equityView = {
+    symbol,
+    key,
+    phase: "loading",
+    tableNet: row.best?.overview?.netProfit
+  };
+  renderTable();
+  try {
+    const data = await previewClientEquity(symbol, {
+      ...(state.config || {}),
+      ...readForm()
+    }, combo);
+    if (!equityView || equityView.key !== key) {
+      return;
+    }
+    const chart = await import("./client/equity-chart.js");
+    equityView = {
+      symbol,
+      key,
+      phase: "ready",
+      tableNet: row.best?.overview?.netProfit,
+      net: data.overview?.netProfit,
+      series: chart.buildEquitySeries(data.closedTrades, data.candles)
+    };
+  } catch (err) {
+    if (!equityView || equityView.key !== key) {
+      return;
+    }
+    equityView = {
+      symbol,
+      key,
+      phase: "error",
+      error: err?.message || String(err)
+    };
+  }
+  renderTable();
 }
 
 function emptyCells(count) {
@@ -199,7 +309,7 @@ function renderTable() {
   tbody.innerHTML = rows
     .map((row) => {
       if (row.error) {
-        return `<tr class="is-error"><td>${escapeHtml(row.symbol)}</td><td class="no">ошибка</td><td colspan="21">${escapeHtml(row.error)}</td>${refreshCell(row)}</tr>`;
+        return `<tr class="is-error" data-symbol="${escapeAttr(row.symbol)}"><td>${escapeHtml(row.symbol)}</td><td class="no">ошибка</td><td colspan="21">${escapeHtml(row.error)}</td>${refreshCell(row)}</tr>${equityDetail(row)}`;
       }
       const o = row.best?.overview;
       const c = row.best?.combo;
@@ -216,7 +326,7 @@ function renderTable() {
             : row.status === "queued"
               ? "is-wait"
               : "";
-        return `<tr class="${kind}"><td>${escapeHtml(row.symbol)}</td><td class="muted">${escapeHtml(label)}</td>${emptyCells(21)}${refreshCell(row)}</tr>`;
+        return `<tr class="${kind}" data-symbol="${escapeAttr(row.symbol)}"><td>${escapeHtml(row.symbol)}</td><td class="muted">${escapeHtml(label)}</td>${emptyCells(21)}${refreshCell(row)}</tr>${equityDetail(row)}`;
       }
       const ok = row.best?.verdict?.ok;
       const overviewNote = formatRsiTouchFlipOverviewBestNote(row.best?.overviewBest);
@@ -226,7 +336,7 @@ function renderTable() {
             ? "Лучшая чистая Обзора среди наборов с зелёным Test"
             : "В сетке нет набора с зелёным Test; показан максимум Обзора")
       );
-      return `<tr>
+      return `<tr data-symbol="${escapeAttr(row.symbol)}">
         <td>${escapeHtml(row.symbol)}</td>
         <td class="${ok ? "ok" : "no"}" title="${okTip}">${ok ? "можно" : "нельзя"}</td>
         <td>${escapeHtml(c.rsiLen)}</td>
@@ -257,9 +367,10 @@ function renderTable() {
         ${moneyCell(row.best?.test?.netProfit, row.best?.test?.netProfitPct)}
         ${suitabilityCell(row)}
         ${refreshCell(row)}
-      </tr>`;
+      </tr>${equityDetail(row)}`;
     })
     .join("");
+  paintEquityCanvas();
 }
 
 function renderChrome() {
@@ -451,6 +562,26 @@ function fillForm(config, opts = {}) {
     : "";
   form.elements.comboLimit.value = "0";
 }
+
+tbody.addEventListener("contextmenu", (ev) => {
+  const tr = ev.target.closest?.("tr");
+  if (!tr || tr.classList.contains("equity-row")) {
+    return;
+  }
+  const symbol = tr.getAttribute("data-symbol");
+  if (!symbol) {
+    return;
+  }
+  ev.preventDefault();
+  void openEquity(symbol);
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && equityView) {
+    equityView = null;
+    renderTable();
+  }
+});
 
 tbody.addEventListener("click", (ev) => {
   const btn = ev.target.closest?.(".row-refresh");

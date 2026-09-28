@@ -163,6 +163,23 @@ th.refresh-col {
 tr:hover td.refresh-cell {
   background: #1c2330;
 }
+tr.equity-row td {
+  text-align: left;
+  background: #0f1419;
+  white-space: normal;
+}
+.equity-panel {
+  padding: 8px 4px 10px;
+}
+.equity-cap {
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+#equity-canvas {
+  width: 100%;
+  height: 220px;
+  display: block;
+}
 .row-refresh {
   background: var(--panel);
   color: var(--text);

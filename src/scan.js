@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { listRsiTouchFlipOptimizeCombos } from "../lib/rsi-touch-flip-optimize.js";
 import {
+  rememberBareBaseline,
   repaintFittedBest,
   snapshotFittedBest
 } from "../lib/rsi-touch-flip-overlay.js";
@@ -13,6 +14,7 @@ import {
   DEFAULT_CONFIG,
   gridPrefsFromConfig,
   normalizeConfig,
+  prefsFromConfig,
   sanitizeScreenerExchange,
   sanitizeScreenerSymbol,
   sanitizeScreenerTf
@@ -401,30 +403,44 @@ export class ScanController {
     const snapped = snapshotFittedBest(best);
     const cfg = this.config;
     const needsRepaint = cfg.cycleSlEnabled || cfg.compoundEnabled;
-    if (!needsRepaint || !snapped?.combo || !rsiHistoryComplete(cfg.chartTf, cfg.rsiTf, history)) {
+    const canEval =
+      snapped?.combo && rsiHistoryComplete(cfg.chartTf, cfg.rsiTf, history);
+    if (!canEval || (!needsRepaint && cfg.compoundEnabled !== true)) {
       return snapped;
     }
+    let rsiValues;
     try {
-      const rsiValues = buildRsiForLen(
+      rsiValues = buildRsiForLen(
         history.candles,
         history.sourceCandles,
         cfg.chartTf,
         cfg.rsiTf,
         snapped.combo.rsiLen
       );
-      return repaintFittedBest(snapped, {
-        candles: history.candles,
-        rsiValues,
-        chartTf: cfg.chartTf,
-        trainPct: cfg.trainPct,
-        cycleSlEnabled: cfg.cycleSlEnabled === true,
-        cycleSlPct: cfg.cycleSlPct,
-        compoundEnabled: cfg.compoundEnabled === true,
-        basePrefs: gridPrefsFromConfig(cfg)
-      });
     } catch {
       return snapped;
     }
+    const sealed = rememberBareBaseline(snapped, {
+      compoundEnabled: cfg.compoundEnabled === true,
+      candles: history.candles,
+      rsiValues,
+      chartTf: cfg.chartTf,
+      trainPct: cfg.trainPct,
+      basePrefs: prefsFromConfig(cfg)
+    });
+    if (!needsRepaint) {
+      return sealed;
+    }
+    return repaintFittedBest(sealed, {
+      candles: history.candles,
+      rsiValues,
+      chartTf: cfg.chartTf,
+      trainPct: cfg.trainPct,
+      cycleSlEnabled: cfg.cycleSlEnabled === true,
+      cycleSlPct: cfg.cycleSlPct,
+      compoundEnabled: cfg.compoundEnabled === true,
+      basePrefs: gridPrefsFromConfig(cfg)
+    });
   }
 
   async applyCycleSl(raw = {}) {
