@@ -11,7 +11,7 @@ import {
   previewClientEquity,
   applyClientCycleSl,
   hasUnfinishedRows
-} from "./client/scan-client.js?v=13";
+} from "./client/scan-client.js?v=14";
 import { parseImportFile } from "./lib/import-results.js";
 import { escapeHtml } from "./lib/screener-defaults.js";
 import { formatRsiTouchFlipOverviewBestNote } from "./lib/rsi-touch-flip-walkforward.js";
