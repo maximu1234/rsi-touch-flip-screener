@@ -137,7 +137,8 @@ function equityDetail(row) {
     p.obLevel != null ? `OB ${p.obLevel}` : "",
     p.maxStack != null ? `стек ${p.maxStack}` : "",
     p.commissionPct != null ? `комиссия ${p.commissionPct}%` : "",
-    p.compoundEnabled ? "Compound" : ""
+    p.compoundEnabled ? "Compound" : "",
+    equityView.tradeCount != null ? `${equityView.tradeCount} сделок` : ""
   ].filter(Boolean);
   const comboNote = comboBits.length ? `${comboBits.join(" · ")} · ` : "";
   return `<tr class="equity-row"><td colspan="24"><div class="equity-panel"><div class="equity-cap">Доходность · ${escapeHtml(comboNote)}${escapeHtml(note)} · закрытые сделки, доллары</div><canvas id="equity-canvas"></canvas></div></td></tr>`;
@@ -148,7 +149,7 @@ function paintEquityCanvas() {
   if (!canvas || equityView?.phase !== "ready" || !equityView.series) {
     return;
   }
-  import("./client/equity-chart.js").then((mod) => {
+  import("./client/equity-chart.js?v=2").then((mod) => {
     if (equityView?.phase === "ready" && document.getElementById("equity-canvas") === canvas) {
       mod.drawEquityChart(canvas, equityView.series);
     }
@@ -206,7 +207,7 @@ async function openEquity(symbol) {
     if (!equityView || equityView.key !== key) {
       return;
     }
-    const chart = await import("./client/equity-chart.js");
+    const chart = await import("./client/equity-chart.js?v=2");
     equityView = {
       symbol,
       key,
@@ -214,6 +215,7 @@ async function openEquity(symbol) {
       tableNet: row.best?.overview?.netProfit,
       net: data.overview?.netProfit,
       prefs: data.prefs || null,
+      tradeCount: Array.isArray(data.closedTrades) ? data.closedTrades.length : null,
       series: chart.buildEquitySeries(data.closedTrades, data.candles)
     };
   } catch (err) {
