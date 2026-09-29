@@ -11,7 +11,7 @@ import {
   previewClientEquity,
   applyClientCycleSl,
   hasUnfinishedRows
-} from "./client/scan-client.js?v=14";
+} from "./client/scan-client.js?v=15";
 import { parseImportFile } from "./lib/import-results.js";
 import { escapeHtml } from "./lib/screener-defaults.js";
 import { formatRsiTouchFlipOverviewBestNote } from "./lib/rsi-touch-flip-walkforward.js";
@@ -130,7 +130,17 @@ function equityDetail(row) {
   const note = differs
     ? `Прогон ${fmt(shown)} USDT, в таблице ${fmt(tableNet)}`
     : `${fmt(shown)} USDT`;
-  return `<tr class="equity-row"><td colspan="24"><div class="equity-panel"><div class="equity-cap">Доходность · ${escapeHtml(note)} · закрытые сделки, доллары</div><canvas id="equity-canvas"></canvas></div></td></tr>`;
+  const p = equityView.prefs || {};
+  const comboBits = [
+    p.rsiLen != null ? `RSI ${p.rsiLen}` : "",
+    p.osLevel != null ? `OS ${p.osLevel}` : "",
+    p.obLevel != null ? `OB ${p.obLevel}` : "",
+    p.maxStack != null ? `стек ${p.maxStack}` : "",
+    p.commissionPct != null ? `комиссия ${p.commissionPct}%` : "",
+    p.compoundEnabled ? "Compound" : ""
+  ].filter(Boolean);
+  const comboNote = comboBits.length ? `${comboBits.join(" · ")} · ` : "";
+  return `<tr class="equity-row"><td colspan="24"><div class="equity-panel"><div class="equity-cap">Доходность · ${escapeHtml(comboNote)}${escapeHtml(note)} · закрытые сделки, доллары</div><canvas id="equity-canvas"></canvas></div></td></tr>`;
 }
 
 function paintEquityCanvas() {
@@ -203,6 +213,7 @@ async function openEquity(symbol) {
       phase: "ready",
       tableNet: row.best?.overview?.netProfit,
       net: data.overview?.netProfit,
+      prefs: data.prefs || null,
       series: chart.buildEquitySeries(data.closedTrades, data.candles)
     };
   } catch (err) {

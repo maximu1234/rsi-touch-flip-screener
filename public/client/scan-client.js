@@ -1044,7 +1044,7 @@ function nextScanSymbol(queue) {
 export async function previewClientEquity(symbol, config, combo) {
   const cfg = normalizeConfig({
     ...config,
-    // Кривая должна совпасть с Алго: свежие свечи, не устаревший IDB-кэш.
+    // Свежие свечи при открытии кривой — не устаревший IDB-кэш скана.
     refreshCache: true
   });
   const safe = sanitizeScreenerSymbol(symbol);
@@ -1065,20 +1065,27 @@ export async function previewClientEquity(symbol, config, combo) {
   const prefs = normalizeRsiTouchFlipPrefs({
     ...prefsFromConfig(cfg),
     ...combo,
-    // Как «Одним объёмом» на Алго: при стеке 1 совпадает с average, при стеке >1 —
-    // без геометрического мульти из формы скринера.
-    sizeMode: "equal",
     cycleSlEnabled: cfg.cycleSlEnabled === true,
     cycleSlPct: cfg.cycleSlPct,
-    compoundEnabled: cfg.compoundEnabled === true,
-    slippageTicks: 0
+    compoundEnabled: cfg.compoundEnabled === true
   });
   const result = runRsiTouchFlip(history.candles, prefs, { rsiValues });
   return {
     candles: history.candles,
     closedTrades: Array.isArray(result.closedTrades) ? result.closedTrades : [],
     overview: result.overview,
-    budget: prefs.budget
+    budget: prefs.budget,
+    prefs: {
+      rsiLen: prefs.rsiLen,
+      osLevel: prefs.osLevel,
+      obLevel: prefs.obLevel,
+      maxStack: prefs.maxStack,
+      commissionPct: prefs.commissionPct,
+      slippageTicks: prefs.slippageTicks,
+      sizeMode: prefs.sizeMode,
+      compoundEnabled: prefs.compoundEnabled === true,
+      cycleSlEnabled: prefs.cycleSlEnabled === true
+    }
   };
 }
 
